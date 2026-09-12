@@ -8,6 +8,7 @@ aparece aquí sin tocar este archivo.
 from __future__ import annotations
 
 import inspect
+import sys
 from enum import Enum
 from pathlib import Path
 from typing import Any
@@ -110,7 +111,22 @@ def _emitir(result: ScanResult, formato: Formato, salida: Path | None, detallado
         salida.write_text(texto, encoding="utf-8")
         console.print(f"[green]Informe guardado en {salida}[/green]")
     else:
+        _escribe_utf8(texto)
+
+
+def _escribe_utf8(texto: str) -> None:
+    """Escribe en stdout siempre en UTF-8.
+
+    Con `print` la codificación la decide la consola, que en Windows es cp1252,
+    así que al redirigir `--formato json` a un fichero se rompían los acentos.
+    """
+    buffer = getattr(sys.stdout, "buffer", None)
+    if buffer is None:  # stdout sustituido (por ejemplo, en los tests)
         print(texto)
+        return
+    buffer.write(texto.encode("utf-8"))
+    buffer.write(b"\n")
+    buffer.flush()
 
 
 def _codigo_salida(result: ScanResult, umbral: Umbral) -> int:
@@ -226,5 +242,17 @@ def _registrar_comandos() -> None:
 _registrar_comandos()
 
 
+def main_cli() -> None:
+    """Punto de entrada del comando `atalaya`.
+
+    Se llama a la aplicación con `windows_expand_args=False` porque, en Windows,
+    Click expande los comodines de los argumentos él mismo (cmd.exe no lo hace
+    por ti, al contrario que un shell de Unix). Eso destroza cualquier opción
+    cuyo valor sea justamente un patrón: `--exclude "tests/*"` llegaba
+    convertido en la lista de archivos de esa carpeta.
+    """
+    app(windows_expand_args=False)
+
+
 if __name__ == "__main__":  # pragma: no cover
-    app()
+    main_cli()

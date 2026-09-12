@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "atalaya"
-version = "0.1.0"
+version = "0.2.0"
 description = "Caja de herramientas modular de seguridad defensiva"
 readme = "README.md"
 requires-python = ">=3.10"
@@ -32,7 +32,7 @@ dependencies = [
 dev = ["pytest>=8.0", "pytest-cov>=5.0", "ruff>=0.5"]
 
 [project.scripts]
-atalaya = "atalaya.cli:app"
+atalaya = "atalaya.cli:main_cli"
 
 [tool.hatch.build.targets.wheel]
 packages = ["atalaya"]

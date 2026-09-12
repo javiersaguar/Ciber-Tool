@@ -12,6 +12,7 @@ import re
 import httpx
 from pydantic import BaseModel, Field
 
+from .. import __version__
 from ..core.finding import Finding, Severity
 from ..core.module import Category, ScanModule
 
@@ -39,7 +40,7 @@ class HttpHeadersInput(BaseModel):
     # Las cabeceras HTTP no admiten caracteres fuera de ASCII, así que el valor
     # por defecto va sin tildes a propósito.
     user_agent: str = Field(
-        default="Atalaya/0.1 (+https://github.com/javiersaguar/atalaya)",
+        default=f"Atalaya/{__version__} (+https://github.com/javiersaguar/Ciber-Tool)",
         description="Cabecera User-Agent a enviar (solo ASCII).",
     )
 
@@ -264,8 +265,7 @@ class HttpHeadersModule(ScanModule):
                     severity=Severity.MEDIUM,
                     title="La CSP admite scripts de cualquier origen",
                     description=(
-                        "Un comodín en script-src/default-src deja la política sin efecto "
-                        "práctico."
+                        "Un comodín en script-src/default-src deja la política sin efecto práctico."
                     ),
                     evidence=_recorta(fuente),
                     remediation="Enumera los orígenes concretos que necesitas.",

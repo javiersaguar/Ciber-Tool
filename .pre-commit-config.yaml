@@ -1,0 +1,19 @@
+# Hooks del propio repositorio. Instalar con:  pre-commit install
+repos:
+  - repo: https://github.com/astral-sh/ruff-pre-commit
+    rev: v0.6.9
+    hooks:
+      - id: ruff
+        args: [--fix]
+      - id: ruff-format
+
+  - repo: local
+    hooks:
+      - id: atalaya-secrets
+        name: Atalaya · busca credenciales en lo que se va a commitear
+        # Se excluyen los tests porque contienen credenciales falsas a propósito,
+        # para ejercitar las reglas de detección.
+        entry: atalaya secrets . --staged --exclude "tests/*" --fallar-en high
+        language: system
+        pass_filenames: false
+        always_run: true

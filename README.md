@@ -39,15 +39,16 @@ validación de la API, el formulario de la web y los tres formatos de informe.
 |---|---|---|
 | `http-headers` | web | Audita HSTS, CSP, X-Frame-Options, cookies, fugas de versión y CORS. |
 | `tls` | crypto | Valida el certificado, su caducidad, fuerza de clave y firma, versiones de TLS y cifrados aceptados. |
+| `secrets` | code | Busca credenciales filtradas en los archivos, en el índice o en el historial de commits. |
 
-En camino: detector de secretos en repositorios git, detector de phishing en URLs
-con aprendizaje automático, y honeypot SSH con panel de ataques.
+En camino: detector de phishing en URLs con aprendizaje automático, y honeypot
+SSH con panel de ataques.
 
 ## Instalación
 
 ```bash
-git clone https://github.com/javiersaguar/atalaya
-cd atalaya
+git clone https://github.com/javiersaguar/Ciber-Tool
+cd Ciber-Tool
 python -m venv .venv && .venv/Scripts/activate   # Linux/macOS: source .venv/bin/activate
 pip install -e ".[dev]"
 ```
@@ -59,7 +60,10 @@ atalaya list                              # módulos disponibles
 atalaya http-headers ejemplo.com          # auditoría de cabeceras
 atalaya tls ejemplo.com --port 443        # certificado y configuración TLS
 atalaya tls ejemplo.com --detallado       # incluye también lo que está bien
+atalaya secrets .                         # busca credenciales en este repositorio
 ```
+
+Si el ejecutable no estuviera disponible, todo funciona igual con `python -m atalaya`.
 
 Informes en otros formatos:
 
@@ -67,6 +71,60 @@ Informes en otros formatos:
 atalaya http-headers ejemplo.com --formato json
 atalaya tls ejemplo.com --formato html --salida informe.html
 ```
+
+### Buscar secretos
+
+El módulo `secrets` tiene tres modos, según lo que interese mirar:
+
+```bash
+atalaya secrets .              # los archivos tal y como están ahora
+atalaya secrets . --staged     # solo lo que se va a commitear
+atalaya secrets . --history    # las líneas añadidas a lo largo del historial
+```
+
+El modo `--history` es el que más sorprende: **borrar un secreto en un commit
+posterior no lo saca del repositorio**, así que sigue ahí para cualquiera que
+clone. Si aparece algo, no basta con borrarlo: hay que revocar la credencial.
+
+Dentro de un repositorio git se respeta el `.gitignore`, porque la lista de
+archivos sale de `git ls-files`.
+
+**Cómo se decide la gravedad.** Hay dos familias de reglas. Las de formato
+conocido (`AKIA…`, `ghp_…`, `sk_live_…`) casi no dan falsos positivos y van en
+crítico. Las contextuales buscan asignaciones tipo `api_key = "…"` y exigen
+además que el valor tenga entropía alta, porque el nombre de la variable no
+basta: `password = "changeme"` no es un secreto.
+
+**Falsos positivos.** Dos formas de silenciarlos:
+
+```bash
+atalaya secrets . --exclude "tests/*,docs/*"   # por ruta
+```
+
+```python
+TOKEN_DE_EJEMPLO = "ghp_0000000000000000000000000000000000"  # atalaya:ignore
+```
+
+Los valores que son claramente huecos (`your_api_key_here`, `${TOKEN}`,
+`changeme`) ya se descartan solos. Con una salvedad deliberada: si el valor
+tiene formato de credencial real pero contiene algo como `EXAMPLE`, **no se
+descarta**, solo se rebaja de gravedad. Perder una clave auténtica que por azar
+contuviera esa palabra sería mucho peor que un falso positivo.
+
+### Como hook de pre-commit
+
+Para que no se te escape un secreto en un commit, en `.pre-commit-config.yaml`:
+
+```yaml
+repos:
+  - repo: https://github.com/javiersaguar/Ciber-Tool
+    rev: v0.2.0
+    hooks:
+      - id: atalaya-secrets
+```
+
+Analiza solo las líneas añadidas al índice, así que un secreto que ya estuviera
+en el historial no te bloquea todos los commits a partir de ahora.
 
 ### Uso en integración continua
 
@@ -149,6 +207,7 @@ atalaya/
 │   ├── registry.py    descubrimiento automático de módulos
 │   └── report.py      renderizado a terminal, JSON y HTML
 ├── modules/           una herramienta por archivo
+│   └── _secret_rules.py   catálogo de reglas (el guion bajo lo excluye del registro)
 └── cli.py             subcomandos generados desde el registro
 ```
 

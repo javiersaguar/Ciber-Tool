@@ -1,0 +1,14 @@
+# Permite usar Atalaya como hook desde otro repositorio:
+#
+#   repos:
+#     - repo: https://github.com/javiersaguar/Ciber-Tool
+#       rev: v0.2.0
+#       hooks:
+#         - id: atalaya-secrets
+- id: atalaya-secrets
+  name: Atalaya · busca credenciales en lo que se va a commitear
+  description: Analiza las líneas añadidas en el índice y corta el commit si encuentra un secreto.
+  entry: atalaya secrets . --staged --fallar-en high
+  language: python
+  pass_filenames: false
+  always_run: true
