@@ -1,4 +1,4 @@
-"""El contrato que cumple todo módulo de Atalaya.
+"""Metadatos compartidos y contrato de análisis puntual de Atalaya.
 
 Un módulo declara qué necesita (`InputModel`, un modelo de pydantic) y qué hace
 (`run`, que devuelve hallazgos). De ese `InputModel` salen automáticamente los
@@ -28,19 +28,38 @@ class Category(str, Enum):
     CODE = "code"
 
 
-class ScanModule(ABC):
-    """Base de todo módulo de análisis puntual (ejecuta, informa y termina).
-
-    Los servicios de larga duración, como un honeypot, no encajan aquí: tendrán
-    su propia base (`ServiceModule`) cuando toque, porque emiten eventos en vez
-    de devolver un resultado cerrado.
-    """
+class ModuleDescriptor(ABC):
+    """Identidad y esquema comunes; no impone un ciclo de ejecución."""
 
     id: ClassVar[str]
     name: ClassVar[str]
     description: ClassVar[str]
     category: ClassVar[Category]
     InputModel: ClassVar[type[BaseModel]]
+
+    def parse_inputs(self, **kwargs) -> BaseModel:
+        return self.InputModel(**kwargs)
+
+    @classmethod
+    def input_schema(cls) -> dict:
+        return cls.InputModel.model_json_schema()
+
+    @classmethod
+    def info(cls) -> dict:
+        return {
+            "id": cls.id,
+            "name": cls.name,
+            "description": cls.description,
+            "category": cls.category.value,
+            "input_schema": cls.input_schema(),
+        }
+
+
+class ScanModule(ModuleDescriptor):
+    """Base de todo módulo de análisis puntual (ejecuta, informa y termina).
+
+    Los servicios de larga duración tienen su propia base hermana, ServiceModule.
+    """
 
     @abstractmethod
     def run(self, inputs: BaseModel) -> list[Finding]:
@@ -74,23 +93,3 @@ class ScanModule(ABC):
             result.error = f"{type(exc).__name__}: {exc}"
         result.duration_seconds = round(time.perf_counter() - start, 3)
         return result
-
-    def parse_inputs(self, **kwargs) -> BaseModel:
-        """Valida argumentos sueltos contra el `InputModel` del módulo."""
-        return self.InputModel(**kwargs)
-
-    @classmethod
-    def input_schema(cls) -> dict:
-        """JSON Schema de las entradas. Es lo que consume el formulario de la web."""
-        return cls.InputModel.model_json_schema()
-
-    @classmethod
-    def info(cls) -> dict:
-        """Ficha del módulo para la API y para `atalaya list`."""
-        return {
-            "id": cls.id,
-            "name": cls.name,
-            "description": cls.description,
-            "category": cls.category.value,
-            "input_schema": cls.input_schema(),
-        }

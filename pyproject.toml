@@ -26,6 +26,9 @@ dependencies = [
     "pydantic>=2.6",
     "httpx>=0.27",
     "cryptography>=42.0",
+    "asyncssh>=2.24,<3",
+    "aiohttp>=3.14.1,<4",
+    "maxminddb>=2.6,<4",
 ]
 
 [project.optional-dependencies]

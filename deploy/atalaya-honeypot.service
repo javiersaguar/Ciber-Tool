@@ -1,0 +1,40 @@
+[Unit]
+Description=Atalaya SSH honeypot (authentication always denied)
+After=network.target
+
+[Service]
+Type=simple
+User=atalaya-honeypot
+Group=atalaya-honeypot
+WorkingDirectory=/opt/atalaya
+StateDirectory=atalaya-honeypot
+StateDirectoryMode=0700
+UMask=0077
+ExecStart=/opt/atalaya/.venv/bin/python -m atalaya ssh-honeypot --host 0.0.0.0 --port 2222 --dashboard-host 127.0.0.1 --dashboard-port 8080 --data-dir /var/lib/atalaya-honeypot --formato json --salida /var/lib/atalaya-honeypot/last-window.json
+Restart=on-failure
+RestartSec=5
+SuccessExitStatus=2
+TimeoutStopSec=15
+NoNewPrivileges=yes
+CapabilityBoundingSet=
+AmbientCapabilities=
+PrivateTmp=yes
+PrivateDevices=yes
+ProtectSystem=strict
+ProtectHome=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectControlGroups=yes
+RestrictSUIDSGID=yes
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
+SystemCallArchitectures=native
+SystemCallFilter=~connect
+SystemCallErrorNumber=EPERM
+LimitCORE=0
+LimitNOFILE=1024
+TasksMax=64
+MemoryMax=384M
+CPUQuota=100%
+
+[Install]
+WantedBy=multi-user.target

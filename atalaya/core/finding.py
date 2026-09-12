@@ -1,6 +1,6 @@
 """Modelo de datos común a todos los módulos.
 
-Cualquier módulo de Atalaya, mire lo que mire, devuelve una lista de `Finding`.
+Cualquier módulo de Atalaya produce `Finding`, como resultado o como evento.
 Eso es lo que permite tener un único renderizador de informes, una única API y
 una única interfaz web para herramientas que por dentro no se parecen en nada.
 """

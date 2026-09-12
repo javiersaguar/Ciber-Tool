@@ -3,6 +3,7 @@
 from .finding import Finding, ScanResult, Severity
 from .module import Category, ScanModule
 from .registry import ModuleRegistry, get_registry
+from .service import ServiceContext, ServiceEvent, ServiceModule
 
 __all__ = [
     "Category",
@@ -11,5 +12,8 @@ __all__ = [
     "ScanModule",
     "ScanResult",
     "Severity",
+    "ServiceContext",
+    "ServiceEvent",
+    "ServiceModule",
     "get_registry",
 ]

@@ -1,0 +1,148 @@
+<!doctype html>
+<html lang="es">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Atalaya · Observatorio SSH</title>
+    <link rel="stylesheet" href="/style.css" />
+    <script src="/app.js" defer></script>
+  </head>
+  <body>
+    <header>
+      <a href="/" class="brand">◬ ATALAYA <span>/ observatorio SSH</span></a>
+      <span id="status" role="status">Desconectado</span>
+    </header>
+    <main>
+      <div class="intro">
+        <div>
+          <p class="eyebrow">TELEMETRÍA DEFENSIVA</p>
+          <h1>Intentos de acceso.</h1>
+          <p>Un registro del ruido que llega a tu señuelo SSH.</p>
+        </div>
+        <div class="deny">
+          ACCESOS CONCEDIDOS <strong>0</strong><small>Autenticación siempre denegada</small>
+        </div>
+      </div>
+      <form id="login">
+        <label for="token"
+          >Token del panel <small>Lee dashboard.token en el directorio de estado</small></label
+        >
+        <div>
+          <input
+            id="token"
+            type="password"
+            autocomplete="off"
+            required
+            placeholder="Pega tu token privado"
+          />
+          <button type="submit">Conectar</button>
+        </div>
+        <p>El token permanece en memoria hasta cerrar o desconectar esta página.</p>
+      </form>
+      <div class="toolbar">
+        <span id="scope">Esperando datos del servicio</span>
+        <div>
+          <button id="export" disabled>Descargar informe JSON</button>
+          <button id="disconnect" disabled>Desconectar</button>
+        </div>
+      </div>
+      <section class="metrics" aria-label="Resumen">
+        <article><span>Intentos retenidos</span><strong id="total">—</strong></article>
+        <article><span>IPs observadas</span><strong id="ips">—</strong></article>
+        <article><span>Hallazgos en ventana</span><strong id="findings">—</strong></article>
+        <article>
+          <span>Nota de actividad</span><strong id="grade">—</strong>
+          <small>No evalúa la seguridad del VPS</small>
+        </article>
+      </section>
+      <div class="grid">
+        <section class="panel map-panel">
+          <div class="panel-title">
+            <h2>Orígenes observados</h2>
+            <span>100 IPs más activas</span>
+          </div>
+          <svg id="map" viewBox="0 0 720 360" role="img" aria-label="Mapa de orígenes aproximados">
+            <defs>
+              <pattern id="grid" width="60" height="60" patternUnits="userSpaceOnUse">
+                <path d="M60 0H0V60" fill="none" stroke="#263443" stroke-width="0.5" />
+              </pattern>
+            </defs>
+            <rect width="720" height="360" fill="url(#grid)" />
+            <g id="land"></g>
+            <g id="points"></g>
+          </svg>
+          <p id="geo-note" class="note">Sin datos de geolocalización.</p>
+          <div id="origins" class="origin-list"></div>
+        </section>
+        <section class="panel">
+          <div class="panel-title">
+            <h2>Credenciales más probadas</h2>
+            <span>Top 15</span>
+          </div>
+          <p class="note">Seudónimos HMAC diarios. Las contraseñas no se conservan.</p>
+          <div class="table-wrap">
+            <table>
+              <thead>
+                <tr>
+                  <th>Usuario / contraseña</th>
+                  <th>Intentos</th>
+                </tr>
+              </thead>
+              <tbody id="ranking">
+                <tr>
+                  <td colspan="2">Aún no hay intentos.</td>
+                </tr>
+              </tbody>
+            </table>
+          </div>
+        </section>
+      </div>
+      <section class="panel">
+        <div class="panel-title">
+          <h2>Evolución temporal</h2>
+          <span>Últimos 60 minutos · UTC</span>
+        </div>
+        <svg id="timeline" viewBox="0 0 1000 150" role="img" aria-label="Intentos por minuto"></svg>
+        <div class="axis">
+          <span id="time-start">—</span><span>Intentos por minuto</span><span id="time-end">—</span>
+        </div>
+      </section>
+      <section class="panel">
+        <div class="panel-title">
+          <h2>Últimos intentos</h2>
+          <span>50 registros · actualización cada segundo</span>
+        </div>
+        <div class="table-wrap">
+          <table>
+            <thead>
+              <tr>
+                <th>Fecha UTC</th>
+                <th>IP de origen</th>
+                <th>Usuario</th>
+                <th>Contraseña</th>
+                <th>Cliente SSH</th>
+                <th>Huella</th>
+              </tr>
+            </thead>
+            <tbody id="recent">
+              <tr>
+                <td colspan="6">Esperando el primer intento.</td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
+      </section>
+      <section class="panel">
+        <div class="panel-title">
+          <h2>Hallazgos</h2>
+          <span id="window">Ventana móvil</span>
+        </div>
+        <div id="alerts">Sin hallazgos en la ventana actual.</div>
+      </section>
+      <footer>
+        <span>SSH sin shell, subsistemas ni reenvíos.</span
+        ><span id="losses">Las pérdidas de telemetría se muestran aquí.</span>
+      </footer>
+    </main>
+  </body>
+</html>

@@ -23,12 +23,12 @@ $ atalaya http-headers github.com
 ## Por qué modular
 
 Cada herramienta de seguridad suele ser un script aislado con su propia salida,
-sus propios argumentos y su propio criterio. Atalaya define **un contrato** que
-cumplen todas:
+sus propios argumentos y su propio criterio. Atalaya define dos contratos hermanos:
 
 - Declaran qué necesitan con un modelo de **pydantic** (`InputModel`).
-- Devuelven siempre lo mismo: una lista de **`Finding`** con gravedad, evidencia
-  y solución.
+- Los análisis `ScanModule` devuelven una lista de **`Finding`** y terminan.
+- Los servicios `ServiceModule` emiten eventos y hallazgos mientras están activos;
+  los informes se obtienen de una ventana temporal.
 
 De ahí sale todo lo demás de forma automática: los argumentos de la CLI, la
 validación de la API, el formulario de la web y los tres formatos de informe.
@@ -40,9 +40,9 @@ validación de la API, el formulario de la web y los tres formatos de informe.
 | `http-headers` | web | Audita HSTS, CSP, X-Frame-Options, cookies, fugas de versión y CORS. |
 | `tls` | crypto | Valida el certificado, su caducidad, fuerza de clave y firma, versiones de TLS y cifrados aceptados. |
 | `secrets` | code | Busca credenciales filtradas en los archivos, en el índice o en el historial de commits. |
+| `ssh-honeypot` | intel | Servicio SSH que siempre deniega acceso, con panel privado y alertas de fuerza bruta. |
 
-En camino: detector de phishing en URLs con aprendizaje automático, y honeypot
-SSH con panel de ataques.
+En camino: detector de phishing en URLs con aprendizaje automático.
 
 ## Instalación
 
@@ -61,6 +61,7 @@ atalaya http-headers ejemplo.com          # auditoría de cabeceras
 atalaya tls ejemplo.com --port 443        # certificado y configuración TLS
 atalaya tls ejemplo.com --detallado       # incluye también lo que está bien
 atalaya secrets .                         # busca credenciales en este repositorio
+atalaya ssh-honeypot                       # SSH en 127.0.0.1:2222; panel en 127.0.0.1:8080
 ```
 
 Si el ejecutable no estuviera disponible, todo funciona igual con `python -m atalaya`.
@@ -71,6 +72,22 @@ Informes en otros formatos:
 atalaya http-headers ejemplo.com --formato json
 atalaya tls ejemplo.com --formato html --salida informe.html
 ```
+
+### Honeypot SSH
+
+`atalaya ssh-honeypot` se mantiene activo hasta Ctrl+C o SIGTERM. El panel requiere
+el token de `.atalaya-honeypot/dashboard.token`; muestra intentos en directo,
+ranking por HMAC, mapa con una base City `.mmdb` local y evolución temporal.
+Todas las autenticaciones se rechazan y no hay canales ni reenvíos.
+
+```bash
+atalaya ssh-honeypot --duration 60 --formato json --salida ventana.json
+atalaya ssh-honeypot --host 0.0.0.0 --port 2222 --geoip-db /ruta/GeoLite2-City.mmdb
+```
+
+Las contraseñas y usuarios se almacenan como seudónimos diarios, nunca como
+credenciales recuperables. Consulta [las decisiones de diseño](docs/service-design.md)
+y [la guía para Windows y VPS Linux](docs/honeypot-operations.md) antes de exponerlo.
 
 ### Buscar secretos
 
@@ -203,18 +220,21 @@ atalaya mi-modulo objetivo.com --profundo
 atalaya/
 ├── core/
 │   ├── finding.py     Severity, Finding, ScanResult (puntuación y nota)
-│   ├── module.py      ScanModule: el contrato
+│   ├── module.py      metadatos compartidos y ScanModule
+│   ├── service.py     ServiceModule, eventos y snapshots de ventana
 │   ├── registry.py    descubrimiento automático de módulos
 │   └── report.py      renderizado a terminal, JSON y HTML
 ├── modules/           una herramienta por archivo
 │   └── _secret_rules.py   catálogo de reglas (el guion bajo lo excluye del registro)
+├── services/          SSH, persistencia y panel privado autocontenido
 └── cli.py             subcomandos generados desde el registro
 ```
 
 ## Aviso
 
-Atalaya analiza objetivos desde fuera, sin explotar nada y sin modificar nada,
-pero **úsalo solo sobre sistemas de tu propiedad o para los que tengas permiso
+Los módulos de análisis inspeccionan objetivos desde fuera, sin explotarlos;
+el honeypot escucha y almacena eventos en el equipo del operador.
+**Úsalo solo sobre sistemas de tu propiedad o para los que tengas permiso
 por escrito**. Escanear infraestructura ajena sin autorización es ilegal en la
 mayoría de las jurisdicciones.
 

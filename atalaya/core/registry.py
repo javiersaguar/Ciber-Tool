@@ -1,7 +1,7 @@
 """Descubrimiento automático de módulos.
 
 Recorre el paquete `atalaya.modules`, importa lo que encuentre y registra toda
-subclase concreta de `ScanModule`. Añadir una herramienta es crear un archivo
+subclase concreta de `ScanModule` o `ServiceModule`. Añadir una herramienta es crear un archivo
 ahí dentro: no hay lista que mantener ni imports que recordar.
 """
 
@@ -13,15 +13,18 @@ import pkgutil
 from functools import lru_cache
 
 from .module import Category, ScanModule
+from .service import ServiceModule
+
+Module = ScanModule | ServiceModule
 
 
 class ModuleRegistry:
     """Colección de módulos disponibles, indexada por id."""
 
     def __init__(self) -> None:
-        self._modules: dict[str, ScanModule] = {}
+        self._modules: dict[str, Module] = {}
 
-    def register(self, module: ScanModule) -> None:
+    def register(self, module: Module) -> None:
         if module.id in self._modules:
             raise ValueError(
                 f"Ya hay un módulo registrado con id '{module.id}' "
@@ -29,7 +32,7 @@ class ModuleRegistry:
             )
         self._modules[module.id] = module
 
-    def get(self, module_id: str) -> ScanModule:
+    def get(self, module_id: str) -> Module:
         try:
             return self._modules[module_id]
         except KeyError:
@@ -38,11 +41,11 @@ class ModuleRegistry:
                 f"No existe el módulo '{module_id}'. Disponibles: {disponibles}"
             ) from None
 
-    def all(self) -> list[ScanModule]:
+    def all(self) -> list[Module]:
         return sorted(self._modules.values(), key=lambda m: (m.category.value, m.id))
 
-    def by_category(self) -> dict[Category, list[ScanModule]]:
-        agrupados: dict[Category, list[ScanModule]] = {}
+    def by_category(self) -> dict[Category, list[Module]]:
+        agrupados: dict[Category, list[Module]] = {}
         for module in self.all():
             agrupados.setdefault(module.category, []).append(module)
         return agrupados
@@ -58,15 +61,15 @@ class ModuleRegistry:
 
 
 def _is_concrete_module(obj: object) -> bool:
-    """Una subclase de ScanModule instanciable y con id propio.
+    """Una subclase de cualquiera de los dos contratos, con id propio.
 
     Descarta la propia base, las clases abstractas intermedias y las clases
     importadas de rebote en otro módulo (cada una se registra desde su archivo).
     """
     return (
         inspect.isclass(obj)
-        and issubclass(obj, ScanModule)
-        and obj is not ScanModule
+        and issubclass(obj, (ScanModule, ServiceModule))
+        and obj not in (ScanModule, ServiceModule)
         and not inspect.isabstract(obj)
         and "id" in obj.__dict__
     )

@@ -23,6 +23,7 @@ from .core.finding import ScanResult, Severity
 from .core.module import ScanModule
 from .core.registry import get_registry
 from .core.report import render_html, render_json, render_terminal
+from .core.service import ServiceContext, ServiceModule, run_service
 
 console = Console()
 err_console = Console(stderr=True)
@@ -83,11 +84,13 @@ def listar() -> None:
     tabla = Table(title=f"Módulos disponibles ({len(registry)})", title_style="bold")
     tabla.add_column("ID", style="cyan bold")
     tabla.add_column("Categoría", style="magenta")
+    tabla.add_column("Tipo")
     tabla.add_column("Descripción")
 
     for categoria, modulos in registry.by_category().items():
         for modulo in modulos:
-            tabla.add_row(modulo.id, categoria.value, modulo.description)
+            tipo = "servicio" if isinstance(modulo, ServiceModule) else "análisis"
+            tabla.add_row(modulo.id, categoria.value, tipo, modulo.description)
 
     console.print()
     console.print(tabla)
@@ -142,7 +145,7 @@ def _codigo_salida(result: ScanResult, umbral: Umbral) -> int:
     return EXIT_OK
 
 
-def _parametros(modulo: ScanModule) -> list[inspect.Parameter]:
+def _parametros(modulo: ScanModule | ServiceModule) -> list[inspect.Parameter]:
     """Traduce el InputModel del módulo a parámetros de typer."""
     requeridos: list[inspect.Parameter] = []
     opcionales: list[inspect.Parameter] = []
@@ -208,7 +211,7 @@ def _parametros(modulo: ScanModule) -> list[inspect.Parameter]:
     return requeridos + opcionales + comunes
 
 
-def _construir_comando(modulo: ScanModule):
+def _construir_comando(modulo: ScanModule | ServiceModule):
     def comando(**kwargs: Any) -> None:
         formato: Formato = kwargs.pop("formato")
         salida: Path | None = kwargs.pop("salida")
@@ -224,7 +227,11 @@ def _construir_comando(modulo: ScanModule):
                 err_console.print(f"  [cyan]{campo}[/cyan]: {error['msg']}")
             raise typer.Exit(EXIT_ERROR) from None
 
-        result = modulo.scan(inputs)
+        if isinstance(modulo, ServiceModule):
+            err_console.print("Servicio activo hasta Ctrl+C, SIGTERM o --duration.")
+            result = run_service(modulo, inputs, on_ready=_servicio_listo)
+        else:
+            result = modulo.scan(inputs)
         _emitir(result, formato, salida, detallado)
         raise typer.Exit(_codigo_salida(result, fallar_en))
 
@@ -232,6 +239,12 @@ def _construir_comando(modulo: ScanModule):
     comando.__doc__ = modulo.description
     comando.__signature__ = inspect.Signature(_parametros(modulo))  # type: ignore[attr-defined]
     return comando
+
+
+def _servicio_listo(context: ServiceContext) -> None:
+    err_console.print(f"Escuchando: {context.target}", markup=False)
+    for key, value in context.metadata.items():
+        err_console.print(f"  {key}: {value}", markup=False)
 
 
 def _registrar_comandos() -> None:
