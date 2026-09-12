@@ -238,9 +238,15 @@ class SSHListener:
                 handler.conn.abort()
             for task in tasks:
                 task.cancel()
+            # Esperar a que las tareas se desenrollen ANTES de cerrar los sockets.
+            # Al revés, una devolución de llamada de asyncssh ya programada
+            # (connection_made -> setsockopt para SO_KEEPALIVE) se ejecutaba contra
+            # un socket ya cerrado y su OSError escapaba al manejador de asyncio,
+            # que imprimía una traza por cada conexión cortada de golpe. Como los
+            # bots cortan de golpe casi siempre, eso inundaba el journal.
+            await asyncio.gather(*tasks, return_exceptions=True)
             for sock in sockets:
                 sock.close()
-            await asyncio.gather(*tasks, return_exceptions=True)
             self.admission.release(ip)
 
     async def close(self):
@@ -328,14 +334,18 @@ async def serve_honeypot(inputs, context: ServiceContext):
     finally:
         context.stop.set()
         if tasks:
-            tasks[0].cancel()
-            tasks[2].cancel()
-            tasks[3].cancel()
+            # Se desempaquetan por nombre: el orden de esta lista era carga útil
+            # (tasks[0], tasks[2], tasks[3] se cancelan y tasks[1] se drena), y
+            # así añadir una tarea nueva no descoloca el apagado en silencio.
+            aceptar, persistir, parada, vigilante = tasks
+            for task in (aceptar, parada, vigilante):
+                task.cancel()
         if listener:
             await listener.close()
         if tasks:
+            # El worker no se cancela: se le deja vaciar la cola en disco.
             drained = await asyncio.gather(
-                asyncio.wait_for(tasks[1], timeout=5), return_exceptions=True
+                asyncio.wait_for(persistir, timeout=5), return_exceptions=True
             )
             if isinstance(drained[0], BaseException):
                 context.error = "Persistencia incompleta al cerrar el servicio"

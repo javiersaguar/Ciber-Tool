@@ -41,6 +41,9 @@ class ServiceContext:
         self.ready = asyncio.Event()
         self.metadata: dict[str, str] = {}
         self.error: str | None = None
+        # Detalle de un fallo de arranque, para la consola del operador.
+        # No entra en el ScanResult: el informe se exporta y se comparte.
+        self.startup_error: str | None = None
         self.dropped_events = 0
         self.dropped_findings = 0
         self._findings: deque[tuple[datetime, Finding]] = deque(maxlen=1000)
@@ -114,6 +117,12 @@ class ServiceModule(ModuleDescriptor):
         except Exception as exc:
             # No reflejar mensajes arbitrarios que puedan contener credenciales.
             context.error = f"{type(exc).__name__}: el servicio no pudo continuar"
+            # Un OSError anterior a aceptar tráfico solo puede venir del sistema
+            # o de la configuración: puerto ocupado, ruta inexistente, permisos.
+            # Ese detalle es justo lo que el operador necesita, así que va a su
+            # consola, nunca al informe, que puede exportarse o subirse a un CI.
+            if not context.ready.is_set() and isinstance(exc, OSError):
+                context.startup_error = str(exc)
         return context.snapshot()
 
 
@@ -121,6 +130,7 @@ def run_service(
     module: ServiceModule,
     inputs: BaseModel,
     on_ready: Callable[[ServiceContext], None] | None = None,
+    on_startup_error: Callable[[str], None] | None = None,
 ) -> ScanResult:
     """Adaptador CLI: SIGINT/SIGTERM en Windows/Linux; un informe al terminar."""
 
@@ -142,7 +152,10 @@ def run_service(
             await asyncio.wait([task, ready], return_when=asyncio.FIRST_COMPLETED)
             if ready.done() and on_ready:
                 on_ready(context)
-            return await task
+            result = await task
+            if context.startup_error and on_startup_error:
+                on_startup_error(context.startup_error)
+            return result
         finally:
             ready.cancel()
             if not task.done():

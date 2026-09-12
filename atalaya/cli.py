@@ -229,7 +229,12 @@ def _construir_comando(modulo: ScanModule | ServiceModule):
 
         if isinstance(modulo, ServiceModule):
             err_console.print("Servicio activo hasta Ctrl+C, SIGTERM o --duration.")
-            result = run_service(modulo, inputs, on_ready=_servicio_listo)
+            result = run_service(
+                modulo,
+                inputs,
+                on_ready=_servicio_listo,
+                on_startup_error=_servicio_no_arranca,
+            )
         else:
             result = modulo.scan(inputs)
         _emitir(result, formato, salida, detallado)
@@ -239,6 +244,11 @@ def _construir_comando(modulo: ScanModule | ServiceModule):
     comando.__doc__ = modulo.description
     comando.__signature__ = inspect.Signature(_parametros(modulo))  # type: ignore[attr-defined]
     return comando
+
+
+def _servicio_no_arranca(detalle: str) -> None:
+    """El informe solo dice el tipo de error; aquí se da el motivo concreto."""
+    err_console.print(f"No se pudo arrancar el servicio: {detalle}", markup=False)
 
 
 def _servicio_listo(context: ServiceContext) -> None:

@@ -47,16 +47,24 @@ class Dashboard:
 
     @web.middleware
     async def guard(self, request, handler):
-        # No confiar en X-Forwarded-* ni en nombres DNS que permitan rebinding.
-        if request.host != self.authority:
-            raise web.HTTPForbidden()
-        if request.headers.get("Origin", self.url) != self.url:
-            raise web.HTTPForbidden()
-        if request.path.startswith("/api/"):
-            supplied = request.headers.get("Authorization", "").encode()
-            if not hmac.compare_digest(supplied, f"Bearer {self.token}".encode()):
-                raise web.HTTPUnauthorized(headers={**self.headers, "WWW-Authenticate": "Bearer"})
-        response = await handler(request)
+        # Las respuestas de error también se blindan: antes solo las llevaban
+        # las 200 y las 401, y un 403 o un 404 salía sin CSP ni nosniff.
+        try:
+            # No confiar en X-Forwarded-* ni en nombres DNS que permitan rebinding.
+            if request.host != self.authority:
+                raise web.HTTPForbidden()
+            if request.headers.get("Origin", self.url) != self.url:
+                raise web.HTTPForbidden()
+            if request.path.startswith("/api/"):
+                supplied = request.headers.get("Authorization", "").encode()
+                if not hmac.compare_digest(supplied, f"Bearer {self.token}".encode()):
+                    raise web.HTTPUnauthorized(
+                        headers={**self.headers, "WWW-Authenticate": "Bearer"}
+                    )
+            response = await handler(request)
+        except web.HTTPException as error:
+            error.headers.update(self.headers)
+            raise
         response.headers.update(self.headers)
         return response
 

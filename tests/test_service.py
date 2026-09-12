@@ -146,7 +146,7 @@ def test_cancellation_propagates_after_cleanup():
 
 
 def test_service_cli_dispatch_keeps_common_options(monkeypatch):
-    def run(module, inputs, on_ready=None):
+    def run(module, inputs, on_ready=None, on_startup_error=None):
         context = ServiceContext(module, module.target_of(inputs))
         context.emit(ServiceEvent(kind="finding", finding=Finding(severity="high", title="ñ")))
         return context.snapshot()
@@ -155,3 +155,39 @@ def test_service_cli_dispatch_keeps_common_options(monkeypatch):
     result = CliRunner().invoke(app, ["ssh-honeypot", "--formato", "json"])
     assert result.exit_code == 2
     assert json.loads(result.stdout)["findings"][0]["title"] == "ñ"
+
+
+def test_startup_error_reaches_the_operator_but_never_the_report():
+    """Un puerto ocupado o una ruta que falta deben poder diagnosticarse.
+
+    El informe se exporta y se sube a un CI, así que ahí sigue yendo solo el
+    tipo de excepción; el motivo concreto va aparte, para la consola.
+    """
+
+    class NoArranca(ExampleService):
+        async def run(self, inputs, context):
+            raise OSError(98, "Address already in use")
+
+    module = NoArranca()
+    context = ServiceContext(module, "local")
+    result = asyncio.run(module.serve(Inputs(), context))
+
+    assert context.startup_error and "Address already in use" in context.startup_error
+    assert result.error == "OSError: el servicio no pudo continuar"
+    assert "Address already in use" not in render_json(result)
+
+
+def test_a_failure_after_startup_reveals_nothing_even_if_it_is_an_oserror():
+    """Con el servicio en marcha, cualquier excepción puede arrastrar red."""
+
+    class RompeEnCaliente(ExampleService):
+        async def run(self, inputs, context):
+            context.ready.set()
+            raise OSError("credential-must-not-be-logged")
+
+    module = RompeEnCaliente()
+    context = ServiceContext(module, "local")
+    result = asyncio.run(module.serve(Inputs(), context))
+
+    assert context.startup_error is None
+    assert "credential-must-not-be-logged" not in render_json(result)

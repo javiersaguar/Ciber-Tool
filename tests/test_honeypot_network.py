@@ -542,3 +542,71 @@ def test_sigterm_produces_final_report_and_zero_exit(tmp_path):
         if proc.poll() is None:
             proc.kill()
         proc.wait(timeout=5)
+
+
+def test_error_responses_also_carry_the_security_headers(tmp_path):
+    """Un 403 o un 404 salían sin CSP ni nosniff; sólo las 200 y las 401 las llevaban."""
+
+    esperadas = (
+        "Content-Security-Policy",
+        "X-Content-Type-Options",
+        "X-Frame-Options",
+        "Referrer-Policy",
+        "Cache-Control",
+    )
+
+    async def scenario():
+        async with running(tmp_path) as (i, c, _):
+            url = c.metadata["dashboard"]
+            auth = {
+                "Authorization": f"Bearer {(i.data_dir / 'dashboard.token').read_text().strip()}"
+            }
+            casos = [
+                ("/api/snapshot", {}, 401),
+                ("/api/snapshot", {**auth, "Host": "evil.test"}, 403),
+                ("/api/snapshot", {**auth, "Origin": "https://evil.test"}, 403),
+                ("/no-existe", {}, 404),
+                ("/", {}, 200),
+            ]
+            async with aiohttp.ClientSession() as client:
+                for path, headers, status in casos:
+                    async with client.get(url + path, headers=headers) as r:
+                        assert r.status == status, path
+                        faltan = [h for h in esperadas if h not in r.headers]
+                        assert not faltan, f"{path} ({status}) sin {faltan}"
+
+    asyncio.run(scenario())
+
+
+def test_abrupt_disconnects_do_not_leak_exceptions_to_the_event_loop(tmp_path):
+    """Los sockets no deben cerrarse antes de que las tareas se desenrollen.
+
+    Si se cierran antes, una devolución de llamada de asyncssh ya programada
+    corre contra un socket cerrado y su OSError escapa al manejador de asyncio,
+    que imprime una traza. Los bots cortan de golpe casi siempre, así que eso
+    inundaba el journal del servicio.
+    """
+
+    async def scenario():
+        async with running(tmp_path, max_per_ip=16, ip_rate=20, connection_rate=50) as (i, _c, _):
+            escapadas = []
+            asyncio.get_running_loop().set_exception_handler(
+                lambda loop, ctx: escapadas.append(repr(ctx.get("exception")))
+            )
+            banner = b"SSH-2.0-Bot\r\n"
+            for _ in range(8):  # Supera el presupuesto de entrada de 128 KiB.
+                _lector, escritor = await asyncio.open_connection("127.0.0.1", i.port)
+                escritor.write(banner + b"A" * (200 * 1024))
+                with contextlib.suppress(Exception):
+                    await asyncio.wait_for(escritor.drain(), timeout=3)
+                escritor.close()
+                with contextlib.suppress(Exception):
+                    await escritor.wait_closed()
+            for _ in range(16):  # Corte brusco justo tras el banner.
+                _lector, escritor = await asyncio.open_connection("127.0.0.1", i.port)
+                escritor.write(banner)
+                escritor.transport.abort()
+            await asyncio.sleep(1.5)
+            assert not escapadas, f"excepciones sin capturar: {escapadas[:3]}"
+
+    asyncio.run(scenario())
