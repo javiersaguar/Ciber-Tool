@@ -1,0 +1,25 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+build/
+dist/
+.venv/
+venv/
+
+# Pruebas y cobertura
+.pytest_cache/
+.coverage
+.coverage.*
+htmlcov/
+.ruff_cache/
+
+# Informes generados
+*.html
+!atalaya/**/*.html
+
+# Editores y sistema
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
