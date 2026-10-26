@@ -41,6 +41,8 @@ validación de la API, el formulario de la web y los tres formatos de informe.
 | `tls` | crypto | Valida el certificado, su caducidad, fuerza de clave y firma, versiones de TLS y cifrados aceptados. |
 | `secrets` | code | Busca credenciales filtradas en los archivos, en el índice o en el historial de commits. |
 | `ssh-honeypot` | intel | Servicio SSH que siempre deniega acceso, con panel privado y alertas de fuerza bruta. |
+| `tcp-ports` | recon | Reconocimiento activo de puertos TCP abiertos en un único host (IPv4/IPv6). |
+| `web-paths` | web | Descubre rutas web y posibles archivos de entorno o metadatos Git expuestos. |
 
 En camino: detector de phishing en URLs con aprendizaje automático.
 
@@ -62,6 +64,8 @@ atalaya tls ejemplo.com --port 443        # certificado y configuración TLS
 atalaya tls ejemplo.com --detallado       # incluye también lo que está bien
 atalaya secrets .                         # busca credenciales en este repositorio
 atalaya ssh-honeypot                       # SSH en 127.0.0.1:2222; panel en 127.0.0.1:8080
+atalaya tcp-ports 127.0.0.1 --ports "22,80,443,8000-8010"
+atalaya web-paths http://127.0.0.1:8000
 ```
 
 Si el ejecutable no estuviera disponible, todo funciona igual con `python -m atalaya`.
@@ -72,6 +76,51 @@ Informes en otros formatos:
 atalaya http-headers ejemplo.com --formato json
 atalaya tls ejemplo.com --formato html --salida informe.html
 ```
+
+### Reconocimiento activo: puertos TCP y rutas web
+
+Estos dos módulos sirven como punto de partida para un pentest autorizado:
+identifican servicios alcanzables y recursos web que merecen revisión.
+No requieren Nmap, permisos de administrador ni dependencias nuevas.
+
+```bash
+atalaya tcp-ports mi-servidor.example --ports "1-1024" --concurrency 16 --timeout 2
+atalaya tcp-ports ::1 --ports "22,443" --formato json --salida puertos.json
+atalaya web-paths https://mi-web.example --formato html --salida rutas.html
+atalaya web-paths https://mi-web.example/app/ --wordlist rutas.txt --rate 3 --total-timeout 120
+```
+
+`tcp-ports` realiza conexiones TCP completas a 30 puertos habituales por defecto.
+Acepta listas y rangos, hasta 4096 puertos y 64 conexiones simultáneas; no acepta
+CIDR ni múltiples hosts. Resuelve el nombre una vez y analiza **solo la primera IP
+resuelta**, indicada en el resumen. Puedes pasar una IP explícita para revisar
+otras direcciones. Distingue conexiones abiertas, rechazos e intentos
+indeterminados/no completados. Los nombres de servicio son orientativos por
+número de puerto, sin identificar versiones ni confirmar protocolos. Un puerto
+abierto se informa como `info`: no demuestra una vulnerabilidad.
+
+`web-paths` prueba 12 rutas habituales: paneles, documentación de API, `robots.txt`,
+`.git/HEAD`, `.env` y `backup.zip`. Puedes sustituirlas con un archivo UTF-8
+de una ruta relativa por línea (líneas vacías y comentarios `#` se omiten).
+Las rutas se añaden a la URL base; se rechazan traversal, URLs, queries y fragmentos.
+El diccionario admite hasta 256 rutas únicas y 64 KiB.
+
+Se envían dos peticiones iniciales a rutas aleatorias inexistentes para filtrar
+respuestas comodín y errores 404 que devuelven HTTP 200. El filtro compara estado,
+redirección y huella del cuerpo, normalizando la ruta reflejada; páginas dinámicas
+pueden requerir revisión manual. Los HTTP 200/3xx/401/403 restantes se muestran
+como **candidatos**, sin asumir que exista una vulnerabilidad. Solo se eleva a
+`high` una respuesta 200 con firma de Git HEAD o de un posible archivo `.env`.
+No se descargan otros objetos Git ni se prueban las credenciales detectadas.
+
+Por defecto hay como máximo 4 peticiones simultáneas, 5 inicios de petición por
+segundo y 60 segundos de ejecución. Ambos módulos aceptan `--total-timeout`.
+Al agotarse el tiempo conservan los resultados completados y resumen lo pendiente.
+El descubridor se detiene ante HTTP 429/503 (pueden terminar peticiones ya iniciadas),
+verifica TLS, no usa proxies del entorno y **no sigue redirecciones**.
+Lee como máximo 32 KiB por respuesta; los cuerpos, cookies y destinos de
+redirección no se incorporan al informe. El resumen expone el alcance y los errores:
+una nota A+ no certifica ausencia de vulnerabilidades ni cobertura completa.
 
 ### Honeypot SSH
 
