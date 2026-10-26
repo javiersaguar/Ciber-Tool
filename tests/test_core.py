@@ -184,6 +184,15 @@ class TestRegistry:
 class TestDescubrimiento:
     """El registro global se construye solo a partir de `atalaya/modules/`."""
 
+    def test_alias_generico_no_es_un_modulo_en_python310(self, monkeypatch):
+        from atalaya.core import registry
+
+        alias = dict[str, list[str]]
+        original = registry.inspect.isclass
+        # Python 3.10 puede clasificar GenericAlias como clase, pero ABCMeta lo rechaza.
+        monkeypatch.setattr(registry.inspect, "isclass", lambda obj: obj is alias or original(obj))
+        assert not registry._is_concrete_module(alias)
+
     def test_encuentra_los_modulos_instalados(self):
         registry = get_registry()
         assert {"http-headers", "tls"} <= set(registry.ids())

@@ -66,9 +66,15 @@ def _is_concrete_module(obj: object) -> bool:
     Descarta la propia base, las clases abstractas intermedias y las clases
     importadas de rebote en otro módulo (cada una se registra desde su archivo).
     """
+    if not inspect.isclass(obj):
+        return False
+    try:
+        es_modulo = issubclass(obj, (ScanModule, ServiceModule))
+    except TypeError:
+        # Python 3.10 puede pasar aliases genéricos a este punto; ABCMeta los rechaza.
+        return False
     return (
-        inspect.isclass(obj)
-        and issubclass(obj, (ScanModule, ServiceModule))
+        es_modulo
         and obj not in (ScanModule, ServiceModule)
         and not inspect.isabstract(obj)
         and "id" in obj.__dict__
