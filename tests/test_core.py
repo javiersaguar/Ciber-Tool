@@ -5,8 +5,16 @@ from __future__ import annotations
 import pytest
 from pydantic import BaseModel
 
-from atalaya.core.finding import Finding, ScanResult, Severity
-from atalaya.core.module import Category, ScanModule
+from atalaya.core.finding import (
+    Check,
+    CheckStatus,
+    EvaluationStatus,
+    Finding,
+    FindingKind,
+    ScanResult,
+    Severity,
+)
+from atalaya.core.module import Category, Coverage, ScanModule
 from atalaya.core.registry import ModuleRegistry, get_registry
 from atalaya.core.report import render_html, render_json, render_terminal
 
@@ -217,3 +225,159 @@ class TestRenderizado:
         r.error = "algo falló"
         render_terminal(r, Console(width=100), verbose=True)
         assert "algo falló" in capsys.readouterr().out
+
+
+class TestEstadoDeEvaluacion:
+    """Un análisis que falla o queda a medias no puede presentarse con nota."""
+
+    def test_un_fallo_sin_hallazgos_no_se_evalua(self):
+        r = ScanResult(module_id="m", module_name="M", target="t", error="ConnectError: x")
+        assert r.status is EvaluationStatus.NOT_EVALUATED
+        assert r.score is None
+        assert r.grade is None
+        assert r.score_upper_bound is None
+
+    def test_un_fallo_con_hallazgos_parciales_queda_incompleto(self):
+        r = resultado(Severity.LOW)
+        r.error = "el servicio no pudo continuar"
+        assert r.status is EvaluationStatus.INCOMPLETE
+        assert r.grade is None
+        assert r.score_upper_bound == 97
+
+    def test_una_comprobacion_sin_determinar_impide_la_nota(self):
+        r = resultado(Severity.LOW)
+        r.checks = [
+            Check(id="a", name="A"),
+            Check(id="b", name="B", status=CheckStatus.UNDETERMINED, detail="timeout"),
+        ]
+        assert r.status is EvaluationStatus.INCOMPLETE
+        assert r.score is None
+        assert r.score_upper_bound == 97
+        assert [c.id for c in r.pending_checks] == ["b"]
+
+    def test_una_omision_pedida_no_impide_la_nota(self):
+        r = resultado()
+        r.checks = [
+            Check(id="a", name="A"),
+            Check(id="b", name="B", status=CheckStatus.SKIPPED),
+        ]
+        assert r.status is EvaluationStatus.COMPLETE
+        assert r.grade == "A+"
+
+    def test_si_ninguna_comprobacion_concluye_no_se_evalua(self):
+        r = resultado()
+        r.checks = [Check(id="a", name="A", status=CheckStatus.UNDETERMINED)]
+        assert r.status is EvaluationStatus.NOT_EVALUATED
+        assert r.grade is None
+
+    def test_la_cobertura_cuenta_por_estado(self):
+        r = resultado()
+        r.checks = [
+            Check(id="a", name="A"),
+            Check(id="b", name="B", status=CheckStatus.SKIPPED),
+            Check(id="c", name="C", status=CheckStatus.UNDETERMINED),
+        ]
+        assert r.coverage() == {"done": 1, "skipped": 1, "undetermined": 1, "total": 3}
+
+
+class TestCoverage:
+    def test_una_comprobacion_que_revienta_queda_pendiente(self):
+        cov = Coverage()
+
+        def rota():
+            raise KeyError("campo")
+
+        assert cov.run("rota", "Rota", rota) == []
+        assert cov.run("sana", "Sana", lambda: [hallazgo(Severity.LOW)])[0].severity is Severity.LOW
+        estados = {c.id: c.status for c in cov.checks}
+        assert estados == {"rota": CheckStatus.UNDETERMINED, "sana": CheckStatus.DONE}
+        assert "KeyError" in cov.checks[0].detail
+
+    def test_scan_recoge_la_cobertura_del_scan_output(self):
+        class Entrada(BaseModel):
+            objetivo: str
+
+        class Modulo(ScanModule):
+            id = "con-cobertura"
+            name = "M"
+            description = "d"
+            category = Category.WEB
+            InputModel = Entrada
+
+            def run(self, inputs):
+                cov = Coverage()
+                cov.done("a", "A")
+                cov.undetermined("b", "B", "timeout")
+                return cov.output([hallazgo(Severity.MEDIUM)])
+
+        r = Modulo().scan(Entrada(objetivo="x"))
+        assert r.ok
+        assert len(r.findings) == 1
+        assert r.status is EvaluationStatus.INCOMPLETE
+        assert r.score_upper_bound == 90
+
+
+class TestInformesSinNota:
+    def _fallido(self) -> ScanResult:
+        return ScanResult(module_id="m", module_name="M", target="t", error="ConnectError: sin red")
+
+    def test_terminal_no_muestra_a_plus_si_fallo(self, capsys):
+        from rich.console import Console
+
+        render_terminal(self._fallido(), Console(width=120))
+        salida = capsys.readouterr().out
+        assert "NO EVALUADO" in salida
+        assert "A+" not in salida
+        assert "100/100" not in salida
+
+    def test_terminal_lista_lo_pendiente_y_la_cobertura(self, capsys):
+        from rich.console import Console
+
+        r = resultado(Severity.LOW)
+        r.checks = [
+            Check(id="a", name="Cabeceras"),
+            Check(
+                id="b",
+                name="Soporte de TLSv1.0",
+                status=CheckStatus.UNDETERMINED,
+                detail="sin respuesta en 10 s",
+            ),
+        ]
+        render_terminal(r, Console(width=140))
+        salida = capsys.readouterr().out
+        assert "ANÁLISIS INCOMPLETO" in salida
+        assert "como máximo 97/100" in salida
+        assert "1 de 2 comprobaciones" in salida
+        assert "Soporte de TLSv1.0" in salida
+        assert "sin respuesta en 10 s" in salida
+
+    def test_json_de_un_fallo_no_trae_nota(self):
+        import json
+
+        datos = json.loads(render_json(self._fallido()))
+        assert datos["status"] == "not_evaluated"
+        assert datos["score"] is None
+        assert datos["grade"] is None
+
+    def test_json_completo_trae_estado_y_cobertura(self):
+        import json
+
+        datos = json.loads(render_json(resultado(Severity.LOW)))
+        assert datos["status"] == "complete"
+        assert datos["grade"] == "A"
+        assert datos["coverage"]["total"] == 0
+
+    def test_html_de_un_fallo_no_trae_nota(self):
+        html = render_html(self._fallido())
+        assert "No evaluado" in html
+        assert 'class="grade"' not in html
+        assert "100/100" not in html
+
+    def test_html_muestra_el_tipo_de_hallazgo(self):
+        r = ScanResult(
+            module_id="m",
+            module_name="M",
+            target="t",
+            findings=[Finding(severity=Severity.HIGH, title="x", kind=FindingKind.VULNERABILITY)],
+        )
+        assert "Vulnerabilidad demostrada" in render_html(r)

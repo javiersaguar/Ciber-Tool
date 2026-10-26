@@ -6,17 +6,19 @@ comprobaciones se ejercitan sin abrir ninguna conexión.
 
 from __future__ import annotations
 
+import ssl
 from datetime import datetime, timedelta, timezone
 from types import SimpleNamespace
 
 import pytest
 from cryptography import x509
-from cryptography.hazmat.primitives import hashes
+from cryptography.hazmat.primitives import hashes, serialization
 from cryptography.hazmat.primitives.asymmetric import ec, rsa
 from cryptography.x509.oid import NameOID
 
-from atalaya.core.finding import Severity
-from atalaya.modules.tls_check import TlsInput, TlsModule, _limpia_host
+from atalaya.core.finding import CheckStatus, EvaluationStatus, FindingKind, Severity
+from atalaya.core.module import Coverage
+from atalaya.modules.tls_check import Soporte, TlsInput, TlsModule, _limpia_host
 
 modulo = TlsModule()
 
@@ -211,3 +213,227 @@ class TestVerificacion:
         hallazgo = modulo._finding_verificacion("algo raro del handshake")
         assert hallazgo.severity is Severity.HIGH
         assert "algo raro" in hallazgo.evidence
+
+
+# -- fallos de red: rechazo frente a "no se pudo determinar" -------------------
+
+
+class _SocketFalso:
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *exc):
+        return False
+
+    def close(self):
+        pass
+
+
+@pytest.fixture
+def red(monkeypatch):
+    """Controla la conexión TCP y el handshake de `_soporta` sin tocar la red.
+
+    `red(conectar=..., handshake=...)`: cada uno es una excepción a lanzar o None
+    para que esa fase salga bien.
+    """
+
+    def instalar(conectar: BaseException | None = None, handshake: BaseException | None = None):
+        def create_connection(*args, **kwargs):
+            if conectar is not None:
+                raise conectar
+            return _SocketFalso()
+
+        def wrap_socket(self, sock, server_hostname=None):
+            if handshake is not None:
+                raise handshake
+            return _SocketFalso()
+
+        monkeypatch.setattr("atalaya.modules.tls_check.socket.create_connection", create_connection)
+        monkeypatch.setattr(ssl.SSLContext, "wrap_socket", wrap_socket)
+
+    return instalar
+
+
+def _error_ssl(reason: str) -> ssl.SSLError:
+    exc = ssl.SSLError(1, f"[SSL: {reason}] {reason.lower()}")
+    exc.reason = reason
+    return exc
+
+
+class TestSoporteDeVersion:
+    V12 = ssl.TLSVersion.TLSv1_2
+
+    def test_handshake_completo_es_aceptada(self, red):
+        red()
+        assert modulo._soporta("x.com", 443, 5, self.V12)[0] is Soporte.SI
+
+    def test_alerta_tls_es_rechazo(self, red):
+        red(handshake=_error_ssl("TLSV1_ALERT_PROTOCOL_VERSION"))
+        assert modulo._soporta("x.com", 443, 5, self.V12)[0] is Soporte.NO
+
+    @pytest.mark.parametrize("corte", [ConnectionResetError(), ssl.SSLEOFError()])
+    def test_que_el_servidor_corte_el_handshake_es_rechazo(self, red, corte):
+        red(handshake=corte)
+        assert modulo._soporta("x.com", 443, 5, self.V12)[0] is Soporte.NO
+
+    def test_timeout_en_el_handshake_no_es_un_rechazo(self, red):
+        red(handshake=TimeoutError("The handshake operation timed out"))
+        estado, detalle = modulo._soporta("x.com", 443, 5, self.V12)
+        assert estado is Soporte.INCIERTO
+        assert "5 s" in detalle
+
+    @pytest.mark.parametrize(
+        "fallo", [TimeoutError("timed out"), ConnectionRefusedError("refused"), OSError("no route")]
+    )
+    def test_no_poder_conectar_no_dice_nada_de_la_version(self, red, fallo):
+        red(conectar=fallo)
+        estado, detalle = modulo._soporta("x.com", 443, 5, self.V12)
+        assert estado is Soporte.INCIERTO
+        assert "conexión" in detalle
+
+    def test_sin_protocolos_disponibles_es_limitacion_local(self, red):
+        red(handshake=_error_ssl("NO_PROTOCOLS_AVAILABLE"))
+        estado, detalle = modulo._soporta("x.com", 443, 5, self.V12)
+        assert estado is Soporte.LOCAL
+        assert "OpenSSL" in detalle
+
+
+class TestProtocolos:
+    def _probar(self, monkeypatch, estados: dict[str, Soporte], negociado: str = "TLSv1.3"):
+        etiquetas = {
+            ssl.TLSVersion.TLSv1_3: "TLSv1.3",
+            ssl.TLSVersion.TLSv1_2: "TLSv1.2",
+            ssl.TLSVersion.TLSv1_1: "TLSv1.1",
+            ssl.TLSVersion.TLSv1: "TLSv1.0",
+        }
+
+        def soporta(host, port, timeout, version):
+            estado = estados[etiquetas[version]]
+            return estado, None if estado in (Soporte.SI, Soporte.NO) else "motivo"
+
+        monkeypatch.setattr(modulo, "_soporta", soporta)
+        cov = Coverage()
+        findings = modulo._check_protocolos("x.com", 443, 5, negociado, cov)
+        return findings, {c.id: c.status for c in cov.checks}
+
+    def test_timeouts_en_las_modernas_no_dan_un_critico_falso(self, monkeypatch):
+        """Antes un timeout contaba como rechazo y salía «no acepta TLS 1.2 ni 1.3»."""
+        findings, checks = self._probar(
+            monkeypatch,
+            {
+                "TLSv1.3": Soporte.INCIERTO,
+                "TLSv1.2": Soporte.INCIERTO,
+                "TLSv1.1": Soporte.NO,
+                "TLSv1.0": Soporte.NO,
+            },
+            negociado="desconocido",
+        )
+        assert Severity.CRITICAL not in gravedades(findings)
+        assert checks["protocolo-TLSv1.2"] is CheckStatus.UNDETERMINED
+        assert checks["protocolo-TLSv1.0"] is CheckStatus.DONE
+
+    def test_si_ambas_modernas_se_rechazan_es_critico(self, monkeypatch):
+        findings, _ = self._probar(
+            monkeypatch,
+            {
+                "TLSv1.3": Soporte.NO,
+                "TLSv1.2": Soporte.NO,
+                "TLSv1.1": Soporte.SI,
+                "TLSv1.0": Soporte.SI,
+            },
+            negociado="TLSv1.1",
+        )
+        assert Severity.CRITICAL in gravedades(findings)
+
+    def test_la_version_negociada_cuenta_como_aceptada(self, monkeypatch):
+        """Si la sonda de TLS 1.3 falla por red pero el handshake principal lo usó, se sabe."""
+        findings, checks = self._probar(
+            monkeypatch,
+            {
+                "TLSv1.3": Soporte.INCIERTO,
+                "TLSv1.2": Soporte.SI,
+                "TLSv1.1": Soporte.NO,
+                "TLSv1.0": Soporte.NO,
+            },
+        )
+        assert checks["protocolo-TLSv1.3"] is CheckStatus.DONE
+        assert not any("TLS 1.3" in f.title for f in findings)
+
+    def test_una_version_obsoleta_aceptada_es_vulnerabilidad(self, monkeypatch):
+        findings, _ = self._probar(
+            monkeypatch,
+            {
+                "TLSv1.3": Soporte.SI,
+                "TLSv1.2": Soporte.SI,
+                "TLSv1.1": Soporte.NO,
+                "TLSv1.0": Soporte.SI,
+            },
+        )
+        obsoletas = [f for f in findings if "acepta TLSv1.0" in f.title]
+        assert obsoletas and obsoletas[0].kind is FindingKind.VULNERABILITY
+
+    def test_sin_tls13_confirmado_avisa_en_bajo(self, monkeypatch):
+        findings, _ = self._probar(
+            monkeypatch,
+            {
+                "TLSv1.3": Soporte.NO,
+                "TLSv1.2": Soporte.SI,
+                "TLSv1.1": Soporte.NO,
+                "TLSv1.0": Soporte.NO,
+            },
+            negociado="TLSv1.2",
+        )
+        assert any("no ofrece TLS 1.3" in f.title for f in findings)
+
+
+class TestAnalisisTls:
+    """El análisis entero con las conexiones sustituidas."""
+
+    def _preparar(self, monkeypatch, soporte: Soporte = Soporte.NO):
+        der = cert(emisor="CA de pruebas").public_bytes(serialization.Encoding.DER)
+        monkeypatch.setattr(modulo, "_verificar", lambda host, port, timeout: None)
+        monkeypatch.setattr(
+            modulo,
+            "_recoger",
+            lambda host, port, timeout: (
+                der,
+                "TLSv1.3",
+                ("TLS_AES_256_GCM_SHA384", "TLSv1.3", 256),
+            ),
+        )
+
+        def soporta(host, port, timeout, version):
+            if version >= ssl.TLSVersion.TLSv1_2:
+                return Soporte.SI, None
+            return soporte, None if soporte is Soporte.NO else "sin respuesta en 5 s"
+
+        monkeypatch.setattr(modulo, "_soporta", soporta)
+
+    def test_todo_concluido_da_nota(self, monkeypatch):
+        self._preparar(monkeypatch)
+        r = modulo.scan(TlsInput(host="x.com"))
+        assert r.status is EvaluationStatus.COMPLETE
+        assert r.grade is not None
+        assert r.coverage()["undetermined"] == 0
+
+    def test_un_timeout_en_tls10_deja_el_analisis_incompleto(self, monkeypatch):
+        self._preparar(monkeypatch, soporte=Soporte.INCIERTO)
+        r = modulo.scan(TlsInput(host="x.com"))
+        assert r.status is EvaluationStatus.INCOMPLETE
+        assert r.grade is None
+        assert {c.id for c in r.pending_checks} == {"protocolo-TLSv1.1", "protocolo-TLSv1.0"}
+
+    def test_desactivar_los_protocolos_es_una_omision(self, monkeypatch):
+        self._preparar(monkeypatch)
+        r = modulo.scan(TlsInput(host="x.com", check_protocols=False))
+        assert r.status is EvaluationStatus.COMPLETE
+        assert r.coverage()["skipped"] == 1
+
+    def test_si_no_se_puede_conectar_no_se_evalua(self, monkeypatch):
+        def sin_red(host, port, timeout):
+            raise TimeoutError("timed out")
+
+        monkeypatch.setattr(modulo, "_verificar", sin_red)
+        r = modulo.scan(TlsInput(host="x.com"))
+        assert r.status is EvaluationStatus.NOT_EVALUATED
+        assert r.grade is None

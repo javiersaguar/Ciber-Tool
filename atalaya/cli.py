@@ -19,7 +19,7 @@ from rich.console import Console
 from rich.table import Table
 
 from . import __version__
-from .core.finding import ScanResult, Severity
+from .core.finding import EvaluationStatus, ScanResult, Severity
 from .core.module import ScanModule
 from .core.registry import get_registry
 from .core.report import render_html, render_json, render_terminal
@@ -35,6 +35,7 @@ OPCIONES_COMUNES = {"formato", "salida", "detallado", "fallar_en"}
 EXIT_OK = 0
 EXIT_ERROR = 1
 EXIT_HALLAZGOS = 2
+EXIT_INCOMPLETO = 3
 
 
 class Formato(str, Enum):
@@ -133,15 +134,21 @@ def _escribe_utf8(texto: str) -> None:
 
 
 def _codigo_salida(result: ScanResult, umbral: Umbral) -> int:
+    """Error, hallazgos por encima del umbral, análisis incompleto o todo bien.
+
+    Un análisis incompleto no puede salir con 0: en un CI eso se leería como
+    "revisado y limpio" cuando hay comprobaciones que no llegaron a concluir.
+    """
     if result.error:
         return EXIT_ERROR
-    if umbral is Umbral.nunca:
-        return EXIT_OK
-    limite = Severity(umbral.value)
-    orden = list(Severity)
-    tope = orden.index(limite)
-    if any(orden.index(f.severity) <= tope for f in result.findings):
-        return EXIT_HALLAZGOS
+    if umbral is not Umbral.nunca:
+        limite = Severity(umbral.value)
+        orden = list(Severity)
+        tope = orden.index(limite)
+        if any(orden.index(f.severity) <= tope for f in result.findings):
+            return EXIT_HALLAZGOS
+    if result.status is not EvaluationStatus.COMPLETE:
+        return EXIT_INCOMPLETO
     return EXIT_OK
 
 

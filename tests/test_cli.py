@@ -95,6 +95,23 @@ class TestCodigoDeSalida:
 
         assert _codigo_salida(resultado(error="se rompió"), Umbral.nunca) == EXIT_ERROR
 
+    def test_un_analisis_incompleto_no_sale_con_cero(self):
+        """En un CI, salir con 0 se leería como "revisado y limpio"."""
+        from atalaya.cli import EXIT_INCOMPLETO
+        from atalaya.core.finding import Check, CheckStatus
+
+        r = resultado(Severity.LOW)
+        r.checks = [Check(id="x", name="X", status=CheckStatus.UNDETERMINED)]
+        assert _codigo_salida(r, Umbral.high) == EXIT_INCOMPLETO
+        assert _codigo_salida(r, Umbral.nunca) == EXIT_INCOMPLETO
+
+    def test_los_hallazgos_graves_mandan_sobre_lo_incompleto(self):
+        from atalaya.core.finding import Check, CheckStatus
+
+        r = resultado(Severity.HIGH)
+        r.checks = [Check(id="x", name="X", status=CheckStatus.UNDETERMINED)]
+        assert _codigo_salida(r, Umbral.high) == EXIT_HALLAZGOS
+
 
 class TestFormatos:
     """Se ejercita con un módulo real pero sin red: el objetivo no resuelve."""
