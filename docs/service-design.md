@@ -33,7 +33,11 @@ sincronización; no es una prueba forense de tiempos ni de identidad del atacant
 
 `/api/report` y la descarga del panel exportan la ventana actual. Al llegar a
 `--duration`, Ctrl+C o SIGTERM se cierran sockets, se drena la cola y se emite
-un informe con los formatos existentes. Códigos: 0 normal, 1 error, 2 hallazgos
+un informe con los formatos existentes. El informe nunca lleva el mensaje de la
+excepción, sólo su tipo, porque se exporta; un `OSError` anterior a aceptar
+tráfico sí detalla el motivo por stderr, donde el operador lo necesita y donde
+todavía no puede haber entrado nada por la red.
+Códigos: 0 normal, 1 error, 2 hallazgos
 que alcanzan `--fallar-en`. **Un proceso vivo no tiene código de salida**: para
 automatización periódica se toma un snapshot. La nota representa actividad de
 esa ventana, no seguridad del VPS. A+ sin observaciones no certifica nada; un
@@ -91,8 +95,15 @@ Siempre se exige autenticación y siempre falla. Se desactivan los demás métod
 PTY, agente, X11 y compresión; todos los handlers de sesión, TCP, UNIX, TUN/TAP y
 listeners devuelven `False`. No hay shell, ejecutor, SFTP, resolución inversa ni
 conexiones a destinos de red. El panel sólo admite loopback, token Bearer,
-Host/Origin exactos, CSP y texto DOM seguro. Sus cuatro SSE como máximo envían
-snapshots cada segundo; no son una cola de todos los eventos.
+Host/Origin exactos, CSP y texto DOM seguro; las cabeceras de seguridad van
+también en las respuestas de error, no sólo en las correctas. Sus cuatro SSE
+como máximo envían snapshots cada segundo; no son una cola de todos los eventos.
+
+Al cerrar una conexión se espera a que sus tareas se desenrollen **antes** de
+cerrar los sockets. Al revés, una devolución de llamada de AsyncSSH ya programada
+corría contra un socket cerrado y su `OSError` escapaba al manejador de asyncio:
+una traza por cada corte brusco, que es como terminan casi todas las visitas
+de un bot.
 
 El mapa usa una base City `.mmdb` del operador, sin APIs ni teselas externas.
 Sin base o sin ubicación muestra ese estado, sin inventar puntos. Una IP puede

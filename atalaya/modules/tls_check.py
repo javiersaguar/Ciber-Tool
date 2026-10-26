@@ -10,13 +10,17 @@ from __future__ import annotations
 import socket
 import ssl
 from datetime import datetime, timezone
+from enum import Enum
 
 from cryptography import x509
 from cryptography.hazmat.primitives.asymmetric import dsa, ec, rsa
 from pydantic import BaseModel, Field
 
-from ..core.finding import Finding, Severity
-from ..core.module import Category, ScanModule
+from ..core.finding import Finding, FindingKind, ScanOutput, Severity
+from ..core.module import Category, Coverage, ScanModule
+
+VULNERABILIDAD = FindingKind.VULNERABILITY
+HARDENING = FindingKind.HARDENING
 
 # Umbrales de aviso por caducidad, en días.
 CADUCIDAD_CRITICA = 7
@@ -47,6 +51,20 @@ _VERSIONES = [
     ("TLSv1.1", ssl.TLSVersion.TLSv1_1, Severity.HIGH),
     ("TLSv1.0", ssl.TLSVersion.TLSv1, Severity.HIGH),
 ]
+_ETIQUETAS = {version: etiqueta for etiqueta, version, _ in _VERSIONES}
+
+
+class Soporte(Enum):
+    """Resultado de probar una versión de TLS contra el servidor."""
+
+    SI = "aceptada"
+    NO = "rechazada"
+    LOCAL = "no probada: limitación local"
+    INCIERTO = "sin determinar"
+
+
+# Razones de OpenSSL que significan "no puedo ni ofrecer esto", no "el servidor dice que no".
+_RAZONES_LOCALES = {"NO_PROTOCOLS_AVAILABLE", "NO_CIPHERS_AVAILABLE"}
 
 
 class TlsInput(BaseModel):
@@ -111,8 +129,9 @@ class TlsModule(ScanModule):
     def target_of(self, inputs: TlsInput) -> str:  # type: ignore[override]
         return f"{_limpia_host(inputs.host)}:{inputs.port}"
 
-    def run(self, inputs: TlsInput) -> list[Finding]:  # type: ignore[override]
+    def run(self, inputs: TlsInput) -> ScanOutput:  # type: ignore[override]
         host = _limpia_host(inputs.host)
+        cov = Coverage()
         findings: list[Finding] = []
 
         # Primero verificamos como lo haría un navegador, para detectar cadenas
@@ -121,33 +140,39 @@ class TlsModule(ScanModule):
 
         # Y después recogemos el certificado sin verificar, para poder analizarlo
         # incluso cuando la validación falla (que es justo cuando más interesa).
+        # Si cualquiera de las dos conexiones falla no hay nada que evaluar: la
+        # excepción sube y el resultado queda como no evaluado.
         der, protocolo, cifrado = self._recoger(host, inputs.port, inputs.timeout)
         cert = x509.load_der_x509_certificate(der)
 
-        if error_verificacion:
-            hallazgo = self._finding_verificacion(error_verificacion)
-            if hallazgo is not None:
-                findings.append(hallazgo)
-        else:
-            findings.append(
-                Finding(
-                    severity=Severity.OK,
-                    title="El certificado valida correctamente",
-                    description="Cadena de confianza completa y nombre del host coincidente.",
-                )
-            )
-
-        findings += self._check_vigencia(cert)
-        findings += self._check_autofirmado(cert, error_verificacion)
-        findings += self._check_firma(cert)
-        findings += self._check_clave(cert)
-        findings += self._check_nombres(cert)
-        findings += self._check_cifrado(protocolo, cifrado)
+        findings += cov.run(
+            "verificacion",
+            "Validación de la cadena y del nombre",
+            lambda: self._check_verificacion(error_verificacion),
+        )
+        findings += cov.run(
+            "vigencia", "Vigencia del certificado", lambda: self._check_vigencia(cert)
+        )
+        findings += cov.run(
+            "autofirmado",
+            "Certificado autofirmado",
+            lambda: self._check_autofirmado(cert, error_verificacion),
+        )
+        findings += cov.run("firma", "Algoritmo de firma", lambda: self._check_firma(cert))
+        findings += cov.run("clave", "Fuerza de la clave", lambda: self._check_clave(cert))
+        findings += cov.run("nombres", "Nombres cubiertos (SAN)", lambda: self._check_nombres(cert))
+        findings += cov.run(
+            "cifrado", "Cifrado negociado", lambda: self._check_cifrado(protocolo, cifrado)
+        )
 
         if inputs.check_protocols:
-            findings += self._check_protocolos(host, inputs.port, inputs.timeout)
+            findings += self._check_protocolos(host, inputs.port, inputs.timeout, protocolo, cov)
+        else:
+            cov.skipped(
+                "protocolos", "Versiones de TLS aceptadas", "Desactivado (--no-check-protocols)"
+            )
 
-        return findings
+        return cov.output(findings)
 
     # -- conexiones -------------------------------------------------------
 
@@ -181,6 +206,18 @@ class TlsModule(ScanModule):
 
     # -- comprobaciones ---------------------------------------------------
 
+    def _check_verificacion(self, error: str | None) -> list[Finding]:
+        if error is None:
+            return [
+                Finding(
+                    severity=Severity.OK,
+                    title="El certificado valida correctamente",
+                    description="Cadena de confianza completa y nombre del host coincidente.",
+                )
+            ]
+        hallazgo = self._finding_verificacion(error)
+        return [hallazgo] if hallazgo is not None else []
+
     def _finding_verificacion(self, error: str) -> Finding | None:
         """Traduce el error de validación a un hallazgo, o None si ya lo cubre otra comprobación."""
         bajo = error.lower()
@@ -190,6 +227,7 @@ class TlsModule(ScanModule):
         if "hostname mismatch" in bajo or "doesn't match" in bajo:
             return Finding(
                 severity=Severity.CRITICAL,
+                kind=VULNERABILIDAD,
                 title="El certificado no corresponde a este dominio",
                 description=(
                     "El nombre del host no aparece entre los del certificado. Los "
@@ -201,6 +239,7 @@ class TlsModule(ScanModule):
         if "self signed" in bajo or "self-signed" in bajo:
             return Finding(
                 severity=Severity.HIGH,
+                kind=VULNERABILIDAD,
                 title="Certificado autofirmado o con cadena no confiable",
                 description=(
                     "Ningún navegador confía en él por defecto, y un certificado "
@@ -211,6 +250,7 @@ class TlsModule(ScanModule):
             )
         return Finding(
             severity=Severity.HIGH,
+            kind=VULNERABILIDAD,
             title="El certificado no supera la validación",
             evidence=error,
             remediation="Revisa la cadena de certificados que sirve el servidor.",
@@ -225,6 +265,7 @@ class TlsModule(ScanModule):
             findings.append(
                 Finding(
                     severity=Severity.CRITICAL,
+                    kind=VULNERABILIDAD,
                     title="El certificado todavía no es válido",
                     description="Su periodo de validez empieza en el futuro.",
                     evidence=f"Válido desde: {inicio:%Y-%m-%d %H:%M UTC}",
@@ -237,6 +278,7 @@ class TlsModule(ScanModule):
             findings.append(
                 Finding(
                     severity=Severity.CRITICAL,
+                    kind=VULNERABILIDAD,
                     title=f"Certificado caducado hace {abs(dias)} días",
                     evidence=f"Caducó: {fin:%Y-%m-%d %H:%M UTC}",
                     remediation="Renuévalo ya y automatiza la renovación con certbot o similar.",
@@ -246,6 +288,7 @@ class TlsModule(ScanModule):
             findings.append(
                 Finding(
                     severity=Severity.CRITICAL,
+                    kind=HARDENING,
                     title=f"El certificado caduca en {dias} días",
                     evidence=f"Caduca: {fin:%Y-%m-%d %H:%M UTC}",
                     remediation="Renueva de inmediato.",
@@ -255,6 +298,7 @@ class TlsModule(ScanModule):
             findings.append(
                 Finding(
                     severity=Severity.HIGH,
+                    kind=HARDENING,
                     title=f"El certificado caduca en {dias} días",
                     evidence=f"Caduca: {fin:%Y-%m-%d %H:%M UTC}",
                     remediation="Programa la renovación esta semana.",
@@ -264,6 +308,7 @@ class TlsModule(ScanModule):
             findings.append(
                 Finding(
                     severity=Severity.MEDIUM,
+                    kind=HARDENING,
                     title=f"El certificado caduca en {dias} días",
                     evidence=f"Caduca: {fin:%Y-%m-%d %H:%M UTC}",
                     remediation="Conviene renovarlo antes de que entre en la última semana.",
@@ -283,6 +328,7 @@ class TlsModule(ScanModule):
             findings.append(
                 Finding(
                     severity=Severity.LOW,
+                    kind=HARDENING,
                     title=f"Periodo de validez excesivo ({vigencia} días)",
                     description=(
                         f"Desde 2020 los navegadores rechazan certificados de servidor "
@@ -305,6 +351,7 @@ class TlsModule(ScanModule):
         return [
             Finding(
                 severity=Severity.HIGH,
+                kind=VULNERABILIDAD,
                 title="El certificado está autofirmado",
                 evidence=f"Emisor y sujeto coinciden: {_nombre_comun(cert.subject)}",
                 remediation="Sustitúyelo por uno emitido por una CA reconocida.",
@@ -321,6 +368,7 @@ class TlsModule(ScanModule):
             return [
                 Finding(
                     severity=Severity.CRITICAL,
+                    kind=VULNERABILIDAD,
                     title=f"Certificado firmado con {algoritmo.upper()}",
                     description=(
                         "MD5 admite colisiones prácticas: se pueden falsificar certificados."
@@ -333,6 +381,7 @@ class TlsModule(ScanModule):
             return [
                 Finding(
                     severity=Severity.CRITICAL,
+                    kind=VULNERABILIDAD,
                     title="Certificado firmado con SHA-1",
                     description=(
                         "SHA-1 tiene colisiones demostradas (SHAttered, 2017) y los "
@@ -359,6 +408,7 @@ class TlsModule(ScanModule):
                 return [
                     Finding(
                         severity=Severity.HIGH if bits >= 1024 else Severity.CRITICAL,
+                        kind=VULNERABILIDAD,
                         title=f"Clave RSA débil ({bits} bits)",
                         description=f"El mínimo aceptado hoy son {RSA_MINIMO_BITS} bits.",
                         evidence=f"Clave pública: RSA {bits} bits",
@@ -373,6 +423,7 @@ class TlsModule(ScanModule):
                 return [
                     Finding(
                         severity=Severity.HIGH,
+                        kind=VULNERABILIDAD,
                         title=f"Curva elíptica débil ({clave.curve.name}, {bits} bits)",
                         evidence=f"Clave pública: EC {clave.curve.name}",
                         remediation="Usa al menos P-256 (secp256r1).",
@@ -389,6 +440,7 @@ class TlsModule(ScanModule):
             return [
                 Finding(
                     severity=Severity.HIGH,
+                    kind=HARDENING,
                     title="Certificado con clave DSA",
                     description="DSA está en desuso y muchos clientes ya no lo aceptan.",
                     remediation="Migra a RSA de 2048 bits o a ECDSA P-256.",
@@ -405,6 +457,7 @@ class TlsModule(ScanModule):
             return [
                 Finding(
                     severity=Severity.HIGH,
+                    kind=VULNERABILIDAD,
                     title="El certificado no tiene extensión SAN",
                     description=(
                         "Los navegadores modernos ignoran el Common Name y exigen SAN, "
@@ -446,6 +499,7 @@ class TlsModule(ScanModule):
                 findings.append(
                     Finding(
                         severity=Severity.HIGH,
+                        kind=VULNERABILIDAD,
                         title=f"Cifrado débil negociado: {nombre}",
                         description=motivo,
                         evidence=f"{protocolo} · {nombre} · {bits} bits",
@@ -460,6 +514,7 @@ class TlsModule(ScanModule):
             findings.append(
                 Finding(
                     severity=Severity.HIGH,
+                    kind=VULNERABILIDAD,
                     title=f"Clave de sesión corta ({bits} bits)",
                     evidence=f"{protocolo} · {nombre}",
                     remediation="Exige suites de al menos 128 bits.",
@@ -476,24 +531,36 @@ class TlsModule(ScanModule):
             )
         return findings
 
-    def _check_protocolos(self, host: str, port: int, timeout: float) -> list[Finding]:
-        soportadas: list[str] = []
-        no_comprobables: list[str] = []
+    def _check_protocolos(
+        self, host: str, port: int, timeout: float, negociado: str, cov: Coverage
+    ) -> list[Finding]:
+        """Prueba cada versión por separado y solo concluye sobre lo que se pudo determinar.
+
+        Antes un timeout contaba igual que un rechazo, así que un servidor lento
+        podía salir como "no acepta TLS 1.0" (bien) o "no acepta TLS 1.2"
+        (crítico) sin que nadie lo hubiera comprobado.
+        """
+        estados: dict[str, Soporte] = {}
         findings: list[Finding] = []
 
         for etiqueta, version, gravedad in _VERSIONES:
-            estado = self._soporta(host, port, timeout, version)
-            if estado is None:
-                no_comprobables.append(etiqueta)
-                continue
-            if not estado:
-                continue
+            estado, detalle = self._soporta(host, port, timeout, version)
+            # El handshake principal ya demostró que esta versión funciona.
+            if etiqueta == negociado:
+                estado, detalle = Soporte.SI, None
+            estados[etiqueta] = estado
 
-            soportadas.append(etiqueta)
-            if gravedad is not Severity.OK:
+            check_id, nombre = f"protocolo-{etiqueta}", f"Soporte de {etiqueta}"
+            if estado in (Soporte.LOCAL, Soporte.INCIERTO):
+                cov.undetermined(check_id, nombre, detalle)
+                continue
+            cov.done(check_id, nombre, estado.value)
+
+            if estado is Soporte.SI and gravedad is not Severity.OK:
                 findings.append(
                     Finding(
                         severity=gravedad,
+                        kind=VULNERABILIDAD,
                         title=f"El servidor acepta {etiqueta}",
                         description=(
                             f"{etiqueta} está formalmente obsoleto (RFC 8996) y arrastra "
@@ -505,19 +572,21 @@ class TlsModule(ScanModule):
                     )
                 )
 
-        modernas = {"TLSv1.2", "TLSv1.3"} & set(soportadas)
-        if not modernas and not no_comprobables:
+        modernas = [estados["TLSv1.3"], estados["TLSv1.2"]]
+        if all(e is Soporte.NO for e in modernas):
             findings.append(
                 Finding(
                     severity=Severity.CRITICAL,
+                    kind=VULNERABILIDAD,
                     title="El servidor no acepta TLS 1.2 ni TLS 1.3",
                     remediation="Habilita TLS 1.2 como mínimo.",
                 )
             )
-        elif "TLSv1.3" not in soportadas and "TLSv1.3" not in no_comprobables:
+        elif estados["TLSv1.3"] is Soporte.NO:
             findings.append(
                 Finding(
                     severity=Severity.LOW,
+                    kind=HARDENING,
                     title="El servidor no ofrece TLS 1.3",
                     description=(
                         "TLS 1.3 es más rápido y elimina por diseño las suites problemáticas."
@@ -526,32 +595,28 @@ class TlsModule(ScanModule):
                 )
             )
 
-        if soportadas:
+        aceptadas = [e for e, estado in estados.items() if estado is Soporte.SI]
+        if aceptadas:
             findings.append(
                 Finding(
                     severity=Severity.INFO,
                     title="Versiones de TLS aceptadas",
-                    evidence=", ".join(soportadas),
-                )
-            )
-        if no_comprobables:
-            findings.append(
-                Finding(
-                    severity=Severity.INFO,
-                    title="Versiones que no se han podido probar",
-                    description=(
-                        "El OpenSSL de esta máquina tiene deshabilitadas estas versiones, "
-                        "así que no se puede saber si el servidor las aceptaría."
-                    ),
-                    evidence=", ".join(no_comprobables),
+                    evidence=", ".join(aceptadas),
                 )
             )
         return findings
 
     def _soporta(
         self, host: str, port: int, timeout: float, version: ssl.TLSVersion
-    ) -> bool | None:
-        """True/False si el servidor acepta esa versión; None si no se puede probar aquí."""
+    ) -> tuple[Soporte, str | None]:
+        """Si el servidor acepta esa versión, y el motivo cuando no se puede saber.
+
+        Solo un rechazo durante el handshake cuenta como "no la acepta": una
+        alerta TLS o que el servidor corte la conexión, que es como muchos
+        rechazan una versión que no hablan. Un timeout o no poder conectar no
+        dicen nada de la versión.
+        """
+        nombre = _ETIQUETAS.get(version, version.name)
         try:
             contexto = ssl.SSLContext(ssl.PROTOCOL_TLS_CLIENT)
             contexto.check_hostname = False
@@ -563,13 +628,38 @@ class TlsModule(ScanModule):
                 # ofrecer las suites de TLS 1.0/1.1.
                 contexto.set_ciphers("ALL:@SECLEVEL=0")
         except (ssl.SSLError, ValueError):
-            return None
+            return Soporte.LOCAL, _motivo_local(nombre)
 
         try:
-            with (
-                socket.create_connection((host, port), timeout=timeout) as sock,
-                contexto.wrap_socket(sock, server_hostname=host),
-            ):
-                return True
-        except (ssl.SSLError, OSError):
-            return False
+            sock = socket.create_connection((host, port), timeout=timeout)
+        except OSError as exc:
+            return Soporte.INCIERTO, f"No se pudo abrir la conexión: {_motivo_red(exc, timeout)}"
+
+        with sock:
+            try:
+                with contexto.wrap_socket(sock, server_hostname=host):
+                    return Soporte.SI, None
+            except ssl.SSLError as exc:
+                if getattr(exc, "reason", None) in _RAZONES_LOCALES:
+                    return Soporte.LOCAL, _motivo_local(nombre)
+                return Soporte.NO, None
+            except (ConnectionResetError, ConnectionAbortedError, BrokenPipeError):
+                return Soporte.NO, None
+            except OSError as exc:
+                return (
+                    Soporte.INCIERTO,
+                    f"El handshake no terminó: {_motivo_red(exc, timeout)}",
+                )
+
+
+def _motivo_local(version: str) -> str:
+    return (
+        f"El OpenSSL de esta máquina no permite ofrecer {version}, así que no se "
+        "sabe si el servidor lo aceptaría"
+    )
+
+
+def _motivo_red(exc: OSError, timeout: float) -> str:
+    if isinstance(exc, TimeoutError):
+        return f"sin respuesta en {timeout:g} s"
+    return f"{type(exc).__name__}: {exc}"

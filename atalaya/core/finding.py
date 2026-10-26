@@ -66,11 +66,37 @@ _COLORS = {
 }
 
 
+class FindingKind(str, Enum):
+    """Qué clase de problema es, aparte de cuánto pesa.
+
+    La gravedad dice cuánto importa; el tipo dice cuánto se ha demostrado. No es
+    lo mismo una cabecera de defensa en profundidad que falta que un certificado
+    caducado o una clave filtrada, aunque ambos puedan pesar lo mismo en la nota.
+    """
+
+    VULNERABILITY = "vulnerability"
+    HARDENING = "hardening"
+
+    @property
+    def label(self) -> str:
+        return _KIND_LABELS[self]
+
+
+_KIND_LABELS = {
+    FindingKind.VULNERABILITY: "Vulnerabilidad demostrada",
+    FindingKind.HARDENING: "Configuración mejorable",
+}
+
+
 class Finding(BaseModel):
     """Un hallazgo concreto: qué pasa, qué lo demuestra y cómo se arregla."""
 
     severity: Severity
     title: str
+    kind: FindingKind | None = Field(
+        default=None,
+        description="Vulnerabilidad demostrada o configuración mejorable; None si no aplica.",
+    )
     description: str = ""
     evidence: str | None = Field(
         default=None,
@@ -81,6 +107,65 @@ class Finding(BaseModel):
 
     def __str__(self) -> str:  # pragma: no cover - conveniencia al depurar
         return f"[{self.severity.label}] {self.title}"
+
+
+class CheckStatus(str, Enum):
+    """Hasta dónde llegó una comprobación concreta."""
+
+    DONE = "done"
+    SKIPPED = "skipped"
+    UNDETERMINED = "undetermined"
+
+    @property
+    def label(self) -> str:
+        return _CHECK_LABELS[self]
+
+
+_CHECK_LABELS = {
+    CheckStatus.DONE: "comprobada",
+    CheckStatus.SKIPPED: "omitida",
+    CheckStatus.UNDETERMINED: "sin determinar",
+}
+
+
+class Check(BaseModel):
+    """Una comprobación del módulo y si llegó a una conclusión.
+
+    `SKIPPED` es una omisión pedida (por ejemplo, desactivar la prueba de
+    protocolos); `UNDETERMINED` es que se intentó y no se pudo concluir nada,
+    como un timeout. Solo lo segundo impide dar nota.
+    """
+
+    id: str
+    name: str
+    status: CheckStatus = CheckStatus.DONE
+    detail: str | None = None
+
+
+class ScanOutput(BaseModel):
+    """Lo que puede devolver `run` cuando además informa de su cobertura."""
+
+    findings: list[Finding] = Field(default_factory=list)
+    checks: list[Check] = Field(default_factory=list)
+
+
+class EvaluationStatus(str, Enum):
+    """Si el resultado permite dar una nota o no."""
+
+    COMPLETE = "complete"
+    INCOMPLETE = "incomplete"
+    NOT_EVALUATED = "not_evaluated"
+
+    @property
+    def label(self) -> str:
+        return _STATUS_LABELS[self]
+
+
+_STATUS_LABELS = {
+    EvaluationStatus.COMPLETE: "Análisis completo",
+    EvaluationStatus.INCOMPLETE: "Análisis incompleto",
+    EvaluationStatus.NOT_EVALUATED: "No evaluado",
+}
 
 
 class ScanResult(BaseModel):
@@ -100,10 +185,42 @@ class ScanResult(BaseModel):
         default_factory=dict,
         description="Datos del objetivo que no son hallazgos (IP resuelta, servidor, etc.).",
     )
+    checks: list[Check] = Field(
+        default_factory=list,
+        description="Cobertura: qué comprobaciones concluyeron y cuáles quedaron pendientes.",
+    )
 
     @property
     def ok(self) -> bool:
         return self.error is None
+
+    @property
+    def status(self) -> EvaluationStatus:
+        """Completo solo si no hubo error y ninguna comprobación quedó sin determinar.
+
+        Sin esta distinción, un módulo que falla antes de emitir hallazgos
+        sacaba 100/100 y A+ junto al mensaje de error.
+        """
+        hechas = [c for c in self.checks if c.status is CheckStatus.DONE]
+        if self.error and not self.findings:
+            return EvaluationStatus.NOT_EVALUATED
+        if self.checks and not hechas and not self.findings:
+            return EvaluationStatus.NOT_EVALUATED
+        if self.error or self.pending_checks:
+            return EvaluationStatus.INCOMPLETE
+        return EvaluationStatus.COMPLETE
+
+    @property
+    def pending_checks(self) -> list[Check]:
+        return [c for c in self.checks if c.status is CheckStatus.UNDETERMINED]
+
+    def coverage(self) -> dict[str, int]:
+        """Recuento de comprobaciones por estado, más el total."""
+        resumen = {s.value: 0 for s in CheckStatus}
+        for check in self.checks:
+            resumen[check.status.value] += 1
+        resumen["total"] = len(self.checks)
+        return resumen
 
     def by_severity(self) -> list[Finding]:
         """Los hallazgos ordenados de más grave a menos."""
@@ -114,15 +231,30 @@ class ScanResult(BaseModel):
         return sum(1 for f in self.findings if f.severity is severity)
 
     @property
-    def score(self) -> int:
-        """Puntuación de 0 a 100. Se parte de 100 y cada hallazgo resta su peso."""
+    def score_upper_bound(self) -> int | None:
+        """Lo que se ha podido calcular con lo comprobado: 100 menos el peso de cada hallazgo.
+
+        En un análisis incompleto es un techo, no la nota: lo que quedó por
+        comprobar solo podría restar. Si no se evaluó nada, no hay cifra.
+        """
+        if self.status is EvaluationStatus.NOT_EVALUATED:
+            return None
         penalty = sum(f.severity.weight for f in self.findings)
         return max(0, 100 - penalty)
 
     @property
-    def grade(self) -> str:
-        """Nota de A+ a F derivada de la puntuación."""
+    def score(self) -> int | None:
+        """Puntuación de 0 a 100, solo si el análisis está completo."""
+        if self.status is not EvaluationStatus.COMPLETE:
+            return None
+        return self.score_upper_bound
+
+    @property
+    def grade(self) -> str | None:
+        """Nota de A+ a F derivada de la puntuación; None si el análisis no está completo."""
         score = self.score
+        if score is None:
+            return None
         for threshold, grade in _GRADES:
             if score >= threshold:
                 return grade

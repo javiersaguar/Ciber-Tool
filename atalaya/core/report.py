@@ -15,13 +15,15 @@ from rich.panel import Panel
 from rich.table import Table
 from rich.text import Text
 
-from .finding import Finding, ScanResult, Severity
+from .finding import CheckStatus, EvaluationStatus, Finding, ScanResult, Severity
 
 # Las que se enseñan siempre; OK e INFO solo en modo detallado.
 _RUIDO = {Severity.OK, Severity.INFO}
 
 
-def _grade_style(grade: str) -> str:
+def _grade_style(grade: str | None) -> str:
+    if grade is None:
+        return "bold black on yellow"
     if grade.startswith("A"):
         return "bold white on green"
     if grade == "B":
@@ -42,11 +44,13 @@ def render_terminal(result: ScanResult, console: Console, verbose: bool = False)
         detalles = "  ·  ".join(f"{k}: {v}" for k, v in result.metadata.items())
         cabecera.append(f"\n{detalles}", style="dim")
 
-    nota = Text(f" {result.grade} ", style=_grade_style(result.grade))
-    nota.append(f"  {result.score}/100", style="bold")
+    partes = [cabecera, Text(), _nota_terminal(result)]
+    cobertura = _texto_cobertura(result)
+    if cobertura:
+        partes.append(Text(cobertura, style="dim"))
 
     console.print()
-    console.print(Panel(Group(cabecera, Text(), nota), border_style="blue"))
+    console.print(Panel(Group(*partes), border_style="blue"))
 
     if result.error:
         console.print(
@@ -59,6 +63,8 @@ def render_terminal(result: ScanResult, console: Console, verbose: bool = False)
         if not result.findings:
             return
 
+    _print_pendientes(result, console, verbose)
+
     mostrados = [f for f in result.by_severity() if verbose or f.severity not in _RUIDO]
     if not mostrados:
         console.print("  [green]Sin hallazgos que reportar.[/green]")
@@ -70,6 +76,63 @@ def render_terminal(result: ScanResult, console: Console, verbose: bool = False)
     console.print(f"[dim]Completado en {result.duration_seconds}s[/dim]")
 
 
+def _nota_terminal(result: ScanResult) -> Text:
+    estado = result.status
+    if estado is EvaluationStatus.COMPLETE:
+        nota = Text(f" {result.grade} ", style=_grade_style(result.grade))
+        nota.append(f"  {result.score}/100", style="bold")
+        return nota
+    if estado is EvaluationStatus.INCOMPLETE:
+        nota = Text(" ANÁLISIS INCOMPLETO ", style="bold black on yellow")
+        nota.append(
+            f"  sin nota · como máximo {result.score_upper_bound}/100 con lo comprobado",
+            style="bold",
+        )
+        return nota
+    nota = Text(" NO EVALUADO ", style="bold white on grey37")
+    nota.append("  sin nota: no se llegó a comprobar nada", style="bold")
+    return nota
+
+
+def _texto_cobertura(result: ScanResult) -> str:
+    """Una línea con cuántas comprobaciones concluyeron; vacía si el módulo no informa."""
+    if not result.checks:
+        return ""
+    c = result.coverage()
+    texto = f"Cobertura: {c['done']} de {c['total']} comprobaciones concluidas"
+    if c["skipped"]:
+        texto += f" · {c['skipped']} omitida(s)"
+    if c["undetermined"]:
+        texto += f" · {c['undetermined']} sin determinar"
+    return texto
+
+
+def _checks_visibles(result: ScanResult, verbose: bool):
+    """Las pendientes siempre; las omitidas solo en modo detallado."""
+    return [
+        c
+        for c in result.checks
+        if c.status is CheckStatus.UNDETERMINED or (verbose and c.status is CheckStatus.SKIPPED)
+    ]
+
+
+def _print_pendientes(result: ScanResult, console: Console, verbose: bool) -> None:
+    """Lo que no se pudo comprobar va siempre a la vista: es lo que impide dar nota."""
+    visibles = _checks_visibles(result, verbose)
+    if not visibles:
+        return
+    tabla = Table(show_header=False, box=None, padding=(0, 2, 0, 2))
+    for check in visibles:
+        estilo = "yellow" if check.status is CheckStatus.UNDETERMINED else "dim"
+        tabla.add_row(
+            Text(check.status.label, style=estilo),
+            Text(check.name, style="bold"),
+            Text(check.detail or "", style="dim"),
+        )
+    console.print(tabla)
+    console.print()
+
+
 # Ancho de la columna de gravedad más su separación: el cuerpo del hallazgo se
 # sangra otro tanto para que las líneas partidas queden alineadas.
 _SANGRIA = 10
@@ -79,6 +142,8 @@ def _print_finding(finding: Finding, console: Console) -> None:
     titulo = Text()
     titulo.append(f"{finding.severity.label:>8}", style=finding.severity.color)
     titulo.append(f"  {finding.title}", style="bold")
+    if finding.kind is not None:
+        titulo.append(f"  · {finding.kind.label}", style="dim")
     console.print(titulo)
 
     lineas: list[Text] = []
@@ -111,8 +176,11 @@ def _summary_table(result: ScanResult, verbose: bool) -> Table:
 def render_json(result: ScanResult, indent: int = 2) -> str:
     """Resultado como JSON, con la nota y el recuento ya calculados."""
     data = result.model_dump(mode="json")
+    data["status"] = result.status.value
     data["score"] = result.score
     data["grade"] = result.grade
+    data["score_upper_bound"] = result.score_upper_bound
+    data["coverage"] = result.coverage()
     data["summary"] = {s.value: result.count(s) for s in Severity if result.count(s)}
     return json.dumps(data, indent=indent, ensure_ascii=False)
 
@@ -146,6 +214,14 @@ _HTML_STYLES = """
         overflow-x: auto; font-size: .8rem; margin: .5rem 0; }
   .fix { color: #15803d; }
   .refs { font-size: .8rem; }
+  .status { display: inline-block; font-size: 1.1rem; font-weight: 700; padding: .4rem .9rem;
+            border-radius: .5rem; margin-top: 1rem; background: #fde68a; color: #713f12; }
+  .status.none { background: #d4d4d8; color: #27272a; }
+  .coverage { color: #71717a; font-size: .85rem; margin-top: .5rem; }
+  .pending { background: #fffbeb; border: 1px solid #fde68a; color: #713f12;
+             padding: .75rem 1rem; border-radius: .4rem; margin-bottom: 1.5rem; }
+  .pending ul { margin: .25rem 0 0; padding-left: 1.25rem; }
+  .kind { font-size: .75rem; color: #71717a; margin-left: .5rem; }
   .error { background: #fef2f2; border: 1px solid #fecaca; color: #b91c1c;
            padding: 1rem; border-radius: .4rem; margin-bottom: 1.5rem; }
   footer { margin-top: 2.5rem; color: #a1a1aa; font-size: .8rem;
@@ -157,6 +233,39 @@ _HTML_STYLES = """
     header, footer { border-color: #3f3f46; }
   }
 """
+
+
+def _nota_html(result: ScanResult) -> str:
+    estado = result.status
+    if estado is EvaluationStatus.COMPLETE:
+        color = _grade_color(result.score or 0)
+        return (
+            f'<span class="grade" style="background:{color}">{escape(result.grade or "")}</span>'
+            f'<span class="score">{result.score}/100</span>'
+        )
+    if estado is EvaluationStatus.INCOMPLETE:
+        return (
+            f'<span class="status">{escape(estado.label)}</span>'
+            f'<span class="score">sin nota · como máximo {result.score_upper_bound}/100 '
+            "con lo comprobado</span>"
+        )
+    return (
+        f'<span class="status none">{escape(estado.label)}</span>'
+        '<span class="score">sin nota: no se llegó a comprobar nada</span>'
+    )
+
+
+def _pendientes_html(result: ScanResult, verbose: bool) -> str:
+    visibles = _checks_visibles(result, verbose)
+    if not visibles:
+        return ""
+    filas = "".join(
+        f"<li><b>{escape(c.name)}</b> ({escape(c.status.label)})"
+        + (f": {escape(c.detail)}" if c.detail else "")
+        + "</li>"
+        for c in visibles
+    )
+    return f'<div class="pending">Comprobaciones sin concluir:<ul>{filas}</ul></div>'
 
 
 def _grade_color(score: int) -> str:
@@ -183,6 +292,9 @@ def render_html(result: ScanResult, verbose: bool = False) -> str:
             f'<span class="sev" style="background:{color}">{escape(f.severity.label)}</span>',
             f"<h3>{escape(f.title)}</h3>",
         ]
+        if f.kind is not None:
+            partes[1] += f'<span class="kind">{escape(f.kind.label)}</span>'
+
         if f.description:
             partes.append(f"<p>{escape(f.description)}</p>")
         if f.evidence:
@@ -202,7 +314,9 @@ def render_html(result: ScanResult, verbose: bool = False) -> str:
     error = f'<div class="error">{escape(result.error)}</div>' if result.error else ""
     cuerpo = "\n".join(bloques) or "<p>Sin hallazgos que reportar.</p>"
     generado = result.started_at.strftime("%Y-%m-%d %H:%M UTC")
-    color_nota = _grade_color(result.score)
+    cobertura = _texto_cobertura(result)
+    cobertura_html = f'<div class="coverage">{escape(cobertura)}</div>' if cobertura else ""
+    pendientes = _pendientes_html(result, verbose)
 
     return f"""<!doctype html>
 <html lang="es">
@@ -217,12 +331,11 @@ def render_html(result: ScanResult, verbose: bool = False) -> str:
   <h1>{escape(result.module_name)}</h1>
   <div class="target">{escape(result.target)}</div>
   <div class="meta">{meta}</div>
-  <div>
-    <span class="grade" style="background:{color_nota}">{escape(result.grade)}</span>
-    <span class="score">{result.score}/100</span>
-  </div>
+  <div>{_nota_html(result)}</div>
+  {cobertura_html}
 </header>
 {error}
+{pendientes}
 {cuerpo}
 <footer>Generado por Atalaya · {generado} · {result.duration_seconds}s</footer>
 </body>

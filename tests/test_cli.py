@@ -19,7 +19,7 @@ ANCHO = {"COLUMNS": "200", "TERMINAL_WIDTH": "200"}
 
 
 def ayuda(*args: str) -> str:
-    # Rich puede insertar estilos ANSI dentro de una opción en los runners de CI.
+    # Los estilos ANSI de Rich pueden partir los nombres de opciones en CI.
     return Text.from_ansi(runner.invoke(app, [*args, "--help"], env=ANCHO).output).plain
 
 
@@ -96,6 +96,23 @@ class TestCodigoDeSalida:
         from atalaya.cli import EXIT_ERROR
 
         assert _codigo_salida(resultado(error="se rompió"), Umbral.nunca) == EXIT_ERROR
+
+    def test_un_analisis_incompleto_no_sale_con_cero(self):
+        """En un CI, salir con 0 se leería como "revisado y limpio"."""
+        from atalaya.cli import EXIT_INCOMPLETO
+        from atalaya.core.finding import Check, CheckStatus
+
+        r = resultado(Severity.LOW)
+        r.checks = [Check(id="x", name="X", status=CheckStatus.UNDETERMINED)]
+        assert _codigo_salida(r, Umbral.high) == EXIT_INCOMPLETO
+        assert _codigo_salida(r, Umbral.nunca) == EXIT_INCOMPLETO
+
+    def test_los_hallazgos_graves_mandan_sobre_lo_incompleto(self):
+        from atalaya.core.finding import Check, CheckStatus
+
+        r = resultado(Severity.HIGH)
+        r.checks = [Check(id="x", name="X", status=CheckStatus.UNDETERMINED)]
+        assert _codigo_salida(r, Umbral.high) == EXIT_HALLAZGOS
 
 
 class TestFormatos:

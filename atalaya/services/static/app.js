@@ -147,7 +147,7 @@ function render(data) {
   $("total").textContent = data.total.toLocaleString("es");
   $("ips").textContent = data.unique_ips.toLocaleString("es");
   $("findings").textContent = data.report.findings.length;
-  $("grade").textContent = data.report.grade;
+  $("grade").textContent = data.report.grade ?? "Sin nota";
   $("scope").textContent =
     `Retención: ${data.retention_hours} h · máximo ${data.max_events.toLocaleString("es")} intentos`;
   $("window").textContent =

@@ -21,7 +21,7 @@ from pathlib import Path
 
 from pydantic import BaseModel, Field
 
-from ..core.finding import Finding, Severity
+from ..core.finding import Finding, FindingKind, Severity
 from ..core.module import Category, ScanModule
 from ._secret_rules import (
     ENTROPIA_ALTA,
@@ -534,6 +534,8 @@ class SecretsModule(ScanModule):
 
         return Finding(
             severity=severidad,
+            # Una credencial a la vista ya es una exposición, no una mejora pendiente.
+            kind=FindingKind.VULNERABILITY,
             title=primera.regla.name,
             description=descripcion,
             evidence=evidencia,

@@ -113,10 +113,26 @@ puertos de panel.
 .\.venv\Scripts\python.exe -m pytest
 ```
 
+## Cuando el servicio no arranca
+
+El informe solo indica el tipo de excepción, porque se exporta y puede acabar
+en un CI o en un ticket. El motivo concreto va a **stderr**, que es donde lo
+verás en la terminal o en `journalctl -u atalaya-honeypot`:
+
+```
+No se pudo arrancar el servicio: [Errno 98] Address already in use
+No se pudo arrancar el servicio: [Errno 2] No such file or directory: 'GeoLite2-City.mmdb'
+```
+
+Solo se detalla así un `OSError` anterior a aceptar tráfico: en ese momento no
+ha entrado nada por la red, de modo que el mensaje únicamente puede describir el
+sistema o la configuración. Una vez el señuelo escucha, cualquier excepción
+podría arrastrar datos del atacante y se calla el detalle.
+
 CI queda configurada para Python 3.10, 3.11 y 3.12 en Linux y Windows.
-Validación local: Windows con Python 3.10 y 3.12, **260 pasan y 1 se omite**
-(SIGTERM exclusivo de Linux); Linux/WSL con Python 3.14, **261 pasan**. Ruff,
-formato y sintaxis JavaScript limpios; wheel construido con los recursos del panel.
+Validación local: Windows con Python 3.12, **264 pasan y 1 se omite**
+(SIGTERM exclusivo de Linux). Ruff, formato y sintaxis JavaScript limpios;
+wheel construido con los recursos del panel.
 La sintaxis de systemd se verificó sustituyendo únicamente la ruta del ejecutable
 por el venv local de pruebas; la unidad no se ha instalado en ningún VPS.
 

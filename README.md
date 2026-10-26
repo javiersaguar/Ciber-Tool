@@ -12,9 +12,10 @@ $ atalaya http-headers github.com
 │ https://github.com/                          │
 │                                              │
 │  A   90/100                                  │
+│ Cobertura: 12 de 12 comprobaciones concluidas│
 ╰──────────────────────────────────────────────╯
 
-    BAJO  Falta Permissions-Policy
+    BAJO  Falta Permissions-Policy  · Configuración mejorable
           Sin ella, cualquier iframe de la página puede pedir cámara,
           micrófono o geolocalización en nombre de tu sitio.
           Solución: Permissions-Policy: camera=(), microphone=(), geolocation=()
@@ -198,9 +199,14 @@ El código de salida permite cortar un pipeline cuando aparece algo grave:
 
 | Código | Significado |
 |---|---|
-| `0` | Sin hallazgos por encima del umbral |
+| `0` | Análisis completo y sin hallazgos por encima del umbral |
 | `1` | El análisis no pudo completarse |
 | `2` | Hay hallazgos en el umbral o por encima |
+| `3` | Sin hallazgos por encima del umbral, pero alguna comprobación quedó sin determinar |
+
+El `3` existe para que un CI no lea como «revisado y limpio» un análisis en el
+que, por ejemplo, la prueba de TLS 1.0 dio timeout. `--fallar-en nunca` solo
+desactiva el `2`.
 
 ```bash
 atalaya http-headers https://mi-web.com --fallar-en medium
@@ -220,6 +226,47 @@ alto 25, medio 10, bajo 3. Los hallazgos informativos no penalizan.
 | D | 50–64 |
 | E | 30–49 |
 | F | < 30 |
+
+**Solo hay nota si el análisis está completo.** Cada módulo informa de su
+cobertura: qué comprobaciones concluyeron, cuáles se omitieron a petición
+(`--no-check-protocols`, `--no-probe-cors`) y cuáles no se pudieron determinar
+(un timeout, una conexión cortada, un OpenSSL local que no puede ofrecer TLS 1.0).
+
+| Estado | Cuándo | Qué se muestra |
+|---|---|---|
+| Completo | Sin errores y todo concluido u omitido a propósito | Nota y puntos |
+| Análisis incompleto | Alguna comprobación sin determinar, o un error con hallazgos parciales | Sin nota; los puntos como techo («como máximo 87/100») y la lista de lo pendiente |
+| No evaluado | El módulo falló antes de comprobar nada | Sin nota ni puntos |
+
+Así un dominio que no resuelve ya no sale con 100/100 y A+ junto al error. En
+el JSON van `status`, `score` y `grade` (nulos si no hay nota),
+`score_upper_bound` y `coverage`.
+
+**Gravedad y tipo son cosas distintas.** Además de la gravedad, cada hallazgo
+dice si es una *vulnerabilidad demostrada* (un certificado caducado, TLS 1.0
+aceptado, un CORS que refleja cualquier origen con credenciales, una clave
+filtrada) o una *configuración mejorable* (una cabecera de defensa en
+profundidad que falta).
+
+### Cómo se interpretan las cabeceras
+
+Las cabeceras se leen según su gramática, no buscando texto:
+
+- **CSP**: se separa en políticas y directivas. `'unsafe-inline'` solo cuenta en
+  `script-src`/`default-src` y si no lo neutraliza un nonce o hash; con
+  `'strict-dynamic'` se ignora la lista de hosts; `https:`, `data:` o
+  `https://*` cuentan como comodín. Si hay varias políticas, una debilidad solo
+  cuenta si la tienen todas.
+- **frame-ancestors**: se mira qué orígenes permite. `*` o `https:` no protegen,
+  y como el navegador ignora X-Frame-Options cuando la directiva existe, un
+  `X-Frame-Options: DENY` no lo compensa.
+- **Cookies**: se separa el par nombre=valor de los atributos, así que una
+  cookie llamada `secure_session` no pasa por tener `Secure`. Se revisan
+  también `SameSite=None` sin `Secure` y los prefijos `__Host-`/`__Secure-`.
+  **El valor nunca llega al informe**: la evidencia queda como
+  `session=[OCULTO]; Secure; HttpOnly`.
+- **CORS**: además de leer las cabeceras, se repite la petición con un `Origin`
+  inventado (`https://atalaya-sonda.invalid`) para ver si el servidor lo refleja.
 
 ## Añadir un módulo
 
@@ -257,6 +304,21 @@ class MiModulo(ScanModule):
         ]
 ```
 
+`run` también puede devolver un `ScanOutput` con la cobertura. `Coverage`
+envuelve cada comprobación y, si una revienta, la marca como sin determinar
+en vez de tumbar el análisis:
+
+```python
+from ..core.module import Coverage
+
+    def run(self, inputs: MiInput):
+        cov = Coverage()
+        findings = cov.run("algo", "Comprobación de algo", lambda: self._check_algo(inputs))
+        if not inputs.profundo:
+            cov.skipped("profundo", "Análisis exhaustivo", "Desactivado")
+        return cov.output(findings)
+```
+
 Y ya está disponible:
 
 ```bash
@@ -268,8 +330,8 @@ atalaya mi-modulo objetivo.com --profundo
 ```
 atalaya/
 ├── core/
-│   ├── finding.py     Severity, Finding, ScanResult (puntuación y nota)
-│   ├── module.py      metadatos compartidos y ScanModule
+│   ├── finding.py     Severity, Finding, ScanResult (estado, cobertura y nota)
+│   ├── module.py      metadatos compartidos, ScanModule y Coverage
 │   ├── service.py     ServiceModule, eventos y snapshots de ventana
 │   ├── registry.py    descubrimiento automático de módulos
 │   └── report.py      renderizado a terminal, JSON y HTML
