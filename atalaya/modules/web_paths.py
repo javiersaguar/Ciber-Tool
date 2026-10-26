@@ -6,6 +6,7 @@ import asyncio
 import contextlib
 import hashlib
 import re
+import time
 from dataclasses import dataclass
 from pathlib import Path
 from urllib.parse import quote, unquote, urlsplit, urlunsplit
@@ -127,11 +128,13 @@ class WebPathsModule(ScanModule):
         async def request(path):
             nonlocal next_request, blocked
             async with lock:
-                loop = asyncio.get_running_loop()
-                await asyncio.sleep(max(0, next_request - loop.time()))
+                # El reloj del event loop de Windows 3.10/3.11 puede tener ticks de
+                # 15 ms y despertar antes del plazo. Revalidar con un reloj preciso.
+                while (remaining := next_request - time.perf_counter()) > 0:
+                    await asyncio.sleep(max(0.001, remaining))
                 if blocked:
                     return None
-                next_request = loop.time() + 1 / inputs.rate
+                next_request = time.perf_counter() + 1 / inputs.rate
             response = await asyncio.wait_for(
                 self._request(client, inputs.url, path), inputs.timeout
             )

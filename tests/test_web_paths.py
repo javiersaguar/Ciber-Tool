@@ -87,12 +87,21 @@ def test_redirects_are_not_followed(site, tmp_path):
     assert "outside.invalid" not in result.model_dump_json()
 
 
-def test_base_path_and_rate_limit(site, tmp_path):
+def test_base_path_and_rate_limit(site, tmp_path, monkeypatch):
+    starts = []
+    original = WebPathsModule._request
+
+    async def request(self, *args):
+        starts.append(time.perf_counter())
+        return await original(self, *args)
+
+    monkeypatch.setattr(WebPathsModule, "_request", request)
     result = scan((site[0] + "/app", site[1]), tmp_path, ["admin"])
     assert result.error is None
     requests = site[1]["requests"]
     assert all(path.startswith("/app/") for path, _ in requests)
-    assert all(b[1] - a[1] >= 0.04 for a, b in zip(requests, requests[1:], strict=False))
+    # Medir inicios del cliente, no llegadas al servidor, que pueden agruparse.
+    assert all(b - a >= 0.045 for a, b in zip(starts, starts[1:], strict=False))
 
 
 def test_stop_on_rate_limit(site, tmp_path):
