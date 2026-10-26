@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 
+from rich.text import Text
 from typer.testing import CliRunner
 
 from atalaya.cli import EXIT_HALLAZGOS, EXIT_OK, Umbral, _codigo_salida, app
@@ -18,7 +19,8 @@ ANCHO = {"COLUMNS": "200", "TERMINAL_WIDTH": "200"}
 
 
 def ayuda(*args: str) -> str:
-    return runner.invoke(app, [*args, "--help"], env=ANCHO).output
+    # Los estilos ANSI de Rich pueden partir los nombres de opciones en CI.
+    return Text.from_ansi(runner.invoke(app, [*args, "--help"], env=ANCHO).output).plain
 
 
 def resultado(*severidades: Severity, error: str | None = None) -> ScanResult:
