@@ -3,7 +3,9 @@ const $ = (id) => document.getElementById(id);
 const svgNS = "http://www.w3.org/2000/svg";
 let token = "",
   controller = null,
-  latest = null;
+  latest = null,
+  pending = null,
+  paused = false;
 const short = (value) => value.slice(0, 12);
 const utc = (epoch) => new Date(epoch * 1000).toISOString().slice(11, 16);
 function element(tag, text) {
@@ -143,6 +145,8 @@ continents.forEach((points) =>
   ),
 );
 function render(data) {
+  pending = data;
+  if (paused) return;
   latest = data;
   $("total").textContent = data.total.toLocaleString("es");
   $("ips").textContent = data.unique_ips.toLocaleString("es");
@@ -155,6 +159,7 @@ function render(data) {
   $("recent").replaceChildren();
   data.recent.forEach((e) => {
     const row = document.createElement("tr");
+    row.dataset.search = [e.ip, e.username_id, e.password_id, e.client_version, e.fingerprint].join(" ").toLowerCase();
     [
       e.timestamp.slice(0, 19).replace("T", " "),
       e.ip,
@@ -230,18 +235,60 @@ function render(data) {
   if (!data.report.findings.length) $("alerts").textContent = "Sin hallazgos en la ventana actual.";
   data.report.findings.forEach((f) => {
     const article = document.createElement("article");
+    article.dataset.severity = f.severity;
     article.append(element("h3", f.title), element("p", f.description), element("p", f.evidence));
     $("alerts").append(article);
   });
   const s = data.stats;
   $("losses").textContent =
     `Conexiones rechazadas: ${s.rejected_connections ?? 0} · intentos descartados: ${s.dropped_attempts ?? 0} · entradas fuera de límite: ${s.rejected_payloads ?? 0}`;
+  filterAttempts();
+  filterAlerts();
 }
+function filterAttempts() {
+  const query = $("search-attempts").value.trim().toLowerCase();
+  const rows = [...$("recent").querySelectorAll("tr")];
+  rows.forEach((row) => row.hidden = !!query && !(row.dataset.search || "").includes(query));
+  $("attempt-count").textContent = latest ? `${rows.filter((r) => !r.hidden).length} de ${rows.length} intentos visibles` : "Esperando datos del servicio.";
+}
+function filterAlerts() {
+  const severity = $("severity-alerts").value;
+  $("alerts").querySelectorAll("article").forEach((article) => {
+    article.hidden = !!severity && article.dataset.severity !== severity;
+  });
+}
+$("search-attempts").addEventListener("input", filterAttempts);
+$("severity-alerts").addEventListener("change", filterAlerts);
+$("pause").addEventListener("click", () => {
+  paused = !paused;
+  $("pause").textContent = paused ? "Reanudar vista" : "Pausar vista";
+  $("pause").setAttribute("aria-pressed", String(paused));
+  if (!paused && pending) render(pending);
+});
+let dashboardTheme = "dark";
+try { dashboardTheme = localStorage.getItem("atalaya-theme") || "dark"; } catch {}
+function themeDashboard() {
+  document.documentElement.dataset.theme = dashboardTheme;
+  $("theme-dashboard").textContent = dashboardTheme === "dark" ? "Modo claro" : "Modo oscuro";
+}
+themeDashboard();
+$("theme-dashboard").addEventListener("click", () => {
+  dashboardTheme = dashboardTheme === "dark" ? "light" : "dark";
+  themeDashboard();
+  try { localStorage.setItem("atalaya-theme", dashboardTheme); } catch {}
+});
 function disconnect() {
   controller?.abort();
   controller = null;
   token = "";
   latest = null;
+  pending = null;
+  paused = false;
+  $("pause").disabled = true;
+  $("pause").textContent = "Pausar vista";
+  $("pause").setAttribute("aria-pressed", "false");
+  $("connect").disabled = false;
+  $("login").setAttribute("aria-busy", "false");
   $("login").hidden = false;
   $("token").value = "";
   $("export").disabled = true;
@@ -251,6 +298,8 @@ function disconnect() {
     $(id).replaceChildren(),
   );
   ["total", "ips", "findings", "grade"].forEach((id) => ($(id).textContent = "—"));
+  $("attempt-count").textContent = "Esperando datos del servicio.";
+  $("alerts").textContent = "Conecta el servicio para ver los hallazgos.";
 }
 $("login").addEventListener("submit", async (event) => {
   event.preventDefault();
@@ -260,6 +309,8 @@ $("login").addEventListener("submit", async (event) => {
   const current = new AbortController();
   controller = current;
   $("status").textContent = "Conectando…";
+  $("connect").disabled = true;
+  $("login").setAttribute("aria-busy", "true");
   try {
     const response = await fetch("/api/events", {
       headers: { Authorization: `Bearer ${token}` },
@@ -271,6 +322,8 @@ $("login").addEventListener("submit", async (event) => {
     $("login").hidden = true;
     $("disconnect").disabled = false;
     $("export").disabled = false;
+    $("pause").disabled = false;
+    $("login").setAttribute("aria-busy", "false");
     $("status").textContent = "● En directo";
     const reader = response.body.getReader(),
       decoder = new TextDecoder();

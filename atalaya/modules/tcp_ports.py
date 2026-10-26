@@ -10,7 +10,7 @@ import socket
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
-from ..core.finding import Finding, Severity
+from ..core.finding import Finding, ScanOutput, Severity
 from ..core.module import Category, ScanModule
 
 COMMON_PORTS = (
@@ -96,8 +96,9 @@ class TcpPortsModule(ScanModule):
     description = "Descubre puertos TCP abiertos en un host mediante conexiones completas."
     category = Category.RECON
     InputModel = TcpPortsInput
+    show_info = True
 
-    def run(self, inputs: TcpPortsInput) -> list[Finding]:
+    def run(self, inputs: TcpPortsInput) -> ScanOutput:
         return asyncio.run(self._scan(inputs))
 
     async def _probe(self, family, address, port: int, timeout: float) -> str:
@@ -116,7 +117,7 @@ class TcpPortsModule(ScanModule):
             except OSError as exc:
                 return "closed" if exc.errno == errno.ECONNREFUSED else "unknown"
 
-    async def _scan(self, inputs: TcpPortsInput) -> list[Finding]:
+    async def _scan(self, inputs: TcpPortsInput) -> ScanOutput:
         loop = asyncio.get_running_loop()
         deadline = loop.time() + inputs.total_timeout
         addresses = await asyncio.wait_for(
@@ -148,6 +149,8 @@ class TcpPortsModule(ScanModule):
                 Finding(
                     severity=Severity.INFO,
                     title=f"Puerto TCP {port} abierto",
+                    rule_id="tcp.open",
+                    location=f"{port}/tcp",
                     description=(
                         f"Servicio habitual: {hint} (inferido por puerto, sin confirmar). "
                         if hint
@@ -169,4 +172,15 @@ class TcpPortsModule(ScanModule):
                 f"indeterminados/no probados: {unknown}",
             )
         )
-        return findings
+        from ..core.module import Coverage
+
+        cov = Coverage()
+        for port in ports:
+            name = f"TCP {port}"
+            if states.get(port) in {"open", "closed"}:
+                cov.done(f"tcp-{port}", name, states[port])
+            else:
+                cov.undetermined(f"tcp-{port}", name, "Sin respuesta o presupuesto agotado")
+        return cov.output(
+            findings, {"IP analizada": address[0], "Límite total": f"{inputs.total_timeout:g} s"}
+        )

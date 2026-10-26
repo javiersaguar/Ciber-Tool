@@ -37,6 +37,7 @@ class ModuleDescriptor(ABC):
     description: ClassVar[str]
     category: ClassVar[Category]
     InputModel: ClassVar[type[BaseModel]]
+    show_info: ClassVar[bool] = False
 
     def parse_inputs(self, **kwargs) -> BaseModel:
         return self.InputModel(**kwargs)
@@ -87,8 +88,8 @@ class Coverage:
             Check(id=check_id, name=name, status=CheckStatus.UNDETERMINED, detail=detail)
         )
 
-    def output(self, findings: list[Finding]) -> ScanOutput:
-        return ScanOutput(findings=findings, checks=self.checks)
+    def output(self, findings: list[Finding], metadata: dict[str, str] | None = None) -> ScanOutput:
+        return ScanOutput(findings=findings, checks=self.checks, metadata=metadata or {})
 
 
 class ScanModule(ModuleDescriptor):
@@ -130,6 +131,7 @@ class ScanModule(ModuleDescriptor):
             if isinstance(salida, ScanOutput):
                 result.findings = salida.findings
                 result.checks = salida.checks
+                result.metadata = salida.metadata
             else:
                 result.findings = salida
         except Exception as exc:  # noqa: BLE001 - un módulo roto no debe tumbar el resto

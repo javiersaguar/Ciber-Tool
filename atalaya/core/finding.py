@@ -93,6 +93,9 @@ class Finding(BaseModel):
 
     severity: Severity
     title: str
+    rule_id: str | None = None
+    location: str | None = None
+    attributes: dict[str, str] = Field(default_factory=dict)
     kind: FindingKind | None = Field(
         default=None,
         description="Vulnerabilidad demostrada o configuración mejorable; None si no aplica.",
@@ -147,6 +150,7 @@ class ScanOutput(BaseModel):
 
     findings: list[Finding] = Field(default_factory=list)
     checks: list[Check] = Field(default_factory=list)
+    metadata: dict[str, str] = Field(default_factory=dict)
 
 
 class EvaluationStatus(str, Enum):

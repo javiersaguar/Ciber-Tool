@@ -15,8 +15,8 @@ import httpx
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 from .. import __version__
-from ..core.finding import Finding, Severity
-from ..core.module import Category, ScanModule
+from ..core.finding import Finding, ScanOutput, Severity
+from ..core.module import Category, Coverage, ScanModule
 
 DEFAULT_PATHS = (
     "robots.txt",
@@ -86,8 +86,9 @@ class WebPathsModule(ScanModule):
     description = "Busca rutas web y exposiciones de configuración con un diccionario acotado."
     category = Category.WEB
     InputModel = WebPathsInput
+    show_info = True
 
-    def run(self, inputs: WebPathsInput) -> list[Finding]:
+    def run(self, inputs: WebPathsInput) -> ScanOutput:
         paths = list(DEFAULT_PATHS)
         if inputs.wordlist:
             with inputs.wordlist.open("rb") as source:
@@ -115,7 +116,7 @@ class WebPathsModule(ScanModule):
                 path, response.status_code, bytes(body), response.headers.get("location", "")
             )
 
-    async def _scan(self, inputs: WebPathsInput, paths: list[str]) -> list[Finding]:
+    async def _scan(self, inputs: WebPathsInput, paths: list[str]) -> ScanOutput:
         responses: list[Probe] = []
         controls: list[Probe] = []
         failed = 0
@@ -194,7 +195,21 @@ class WebPathsModule(ScanModule):
                 f"interrumpido por 429/503: {blocked}",
             )
         )
-        return findings
+        cov = Coverage()
+        received = {r.path: r for r in responses}
+        for path in paths:
+            response = received.get(path)
+            if response is None or response.status >= 500 or response.status == 429:
+                cov.undetermined(
+                    path, f"Ruta /{path}", "Sin respuesta concluyente o límite alcanzado"
+                )
+            else:
+                cov.done(path, f"Ruta /{path}", f"HTTP {response.status}")
+        if len(controls) != 2:
+            cov.undetermined("wildcard", "Control de páginas comodín", "Control incompleto")
+        else:
+            cov.done("wildcard", "Control de páginas comodín")
+        return cov.output(findings)
 
     def _finding(self, response: Probe) -> Finding:
         severity = Severity.INFO
@@ -218,6 +233,8 @@ class WebPathsModule(ScanModule):
                 remediation = "Retira el archivo del acceso público y revisa/rota sus credenciales."
         return Finding(
             severity=severity,
+            rule_id="web.exposed-config" if severity is Severity.HIGH else "web.path",
+            location=response.path,
             title=title,
             description="Detectado por estado y firma de contenido; confirma el resultado."
             if severity is Severity.HIGH

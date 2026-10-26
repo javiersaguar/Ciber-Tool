@@ -9,14 +9,21 @@
   </head>
   <body>
     <header>
-      <a href="/" class="brand">◬ ATALAYA <span>/ observatorio SSH</span></a>
-      <span id="status" role="status">Desconectado</span>
+      <a href="/" class="brand">ATALAYA <span>/ observatorio SSH</span></a>
+      <div class="header-actions"><button id="theme-dashboard" type="button">Cambiar tema</button>
+      <span id="status" role="status">Desconectado</span></div>
     </header>
-    <main>
+    <aside class="dashboard-sidebar" aria-label="Navegación del observatorio">
+      <p>OBSERVATORIO</p><nav><a href="#summary">Resumen de actividad</a>
+      <a href="#origins-section">Orígenes y credenciales</a><a href="#timeline-section">Evolución temporal</a>
+      <a href="#attempts-section">Registro de intentos</a><a href="#alerts-section">Hallazgos</a></nav>
+      <div class="sidebar-info">SSH sin acceso<br>Telemetría local y privada</div>
+    </aside>
+    <main id="summary">
       <div class="intro">
         <div>
           <p class="eyebrow">TELEMETRÍA DEFENSIVA</p>
-          <h1>Intentos de acceso.</h1>
+          <h1>Observatorio de actividad.</h1>
           <p>Un registro del ruido que llega a tu señuelo SSH.</p>
         </div>
         <div class="deny">
@@ -35,7 +42,7 @@
             required
             placeholder="Pega tu token privado"
           />
-          <button type="submit">Conectar</button>
+          <button id="connect" type="submit">Conectar al servicio</button>
         </div>
         <p>El token permanece en memoria hasta cerrar o desconectar esta página.</p>
       </form>
@@ -43,6 +50,7 @@
         <span id="scope">Esperando datos del servicio</span>
         <div>
           <button id="export" disabled>Descargar informe JSON</button>
+          <button id="pause" disabled aria-pressed="false">Pausar vista</button>
           <button id="disconnect" disabled>Desconectar</button>
         </div>
       </div>
@@ -55,7 +63,7 @@
           <small>No evalúa la seguridad del VPS</small>
         </article>
       </section>
-      <div class="grid">
+      <div class="grid" id="origins-section">
         <section class="panel map-panel">
           <div class="panel-title">
             <h2>Orígenes observados</h2>
@@ -97,7 +105,7 @@
           </div>
         </section>
       </div>
-      <section class="panel">
+      <section class="panel" id="timeline-section">
         <div class="panel-title">
           <h2>Evolución temporal</h2>
           <span>Últimos 60 minutos · UTC</span>
@@ -107,11 +115,15 @@
           <span id="time-start">—</span><span>Intentos por minuto</span><span id="time-end">—</span>
         </div>
       </section>
-      <section class="panel">
+      <section class="panel" id="attempts-section">
         <div class="panel-title">
           <h2>Últimos intentos</h2>
           <span>50 registros · actualización cada segundo</span>
         </div>
+        <label class="table-search" for="search-attempts">Buscar en los últimos intentos
+          <input id="search-attempts" type="search" placeholder="IP, cliente SSH o seudónimo…" />
+        </label>
+        <p id="attempt-count" class="note" role="status">Esperando datos del servicio.</p>
         <div class="table-wrap">
           <table>
             <thead>
@@ -132,11 +144,15 @@
           </table>
         </div>
       </section>
-      <section class="panel">
+      <section class="panel" id="alerts-section">
         <div class="panel-title">
           <h2>Hallazgos</h2>
           <span id="window">Ventana móvil</span>
         </div>
+        <label class="alert-filter" for="severity-alerts">Gravedad
+          <select id="severity-alerts"><option value="">Todas</option><option value="critical">Crítico</option>
+          <option value="high">Alto</option><option value="medium">Medio</option><option value="low">Bajo</option></select>
+        </label>
         <div id="alerts">Sin hallazgos en la ventana actual.</div>
       </section>
       <footer>

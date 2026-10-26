@@ -44,6 +44,9 @@ validación de la API, el formulario de la web y los tres formatos de informe.
 | `ssh-honeypot` | intel | Servicio SSH que siempre deniega acceso, con panel privado y alertas de fuerza bruta. |
 | `tcp-ports` | recon | Reconocimiento activo de puertos TCP abiertos en un único host (IPv4/IPv6). |
 | `web-paths` | web | Descubre rutas web y posibles archivos de entorno o metadatos Git expuestos. |
+| `subdomains` | recon | Resuelve candidatos DNS A/AAAA, con controles de wildcard y cobertura por nombre. |
+| `services` | recon | Identifica protocolos por respuestas reales y separa la confianza del protocolo de la versión anunciada. |
+| `web-crawl` | web | Rastrea HTML dentro del origen y ruta base; descubre formularios, parámetros y referencias sin enviarlos. |
 
 En camino: detector de phishing en URLs con aprendizaje automático.
 
@@ -67,6 +70,11 @@ atalaya secrets .                         # busca credenciales en este repositor
 atalaya ssh-honeypot                       # SSH en 127.0.0.1:2222; panel en 127.0.0.1:8080
 atalaya tcp-ports 127.0.0.1 --ports "22,80,443,8000-8010"
 atalaya web-paths http://127.0.0.1:8000
+atalaya subdomains mi-dominio.example
+atalaya services 127.0.0.1 --ports "22,80,443"
+atalaya web-crawl http://127.0.0.1:8000 --max-pages 25
+atalaya audit https://mi-dominio.example --formato html --salida auditoria.html
+atalaya history list
 ```
 
 Si el ejecutable no estuviera disponible, todo funciona igual con `python -m atalaya`.
@@ -77,6 +85,87 @@ Informes en otros formatos:
 atalaya http-headers ejemplo.com --formato json
 atalaya tls ejemplo.com --formato html --salida informe.html
 ```
+
+### Auditoría conjunta e historial
+
+`atalaya audit` ejecuta HTTP, TLS, puertos TCP, identificación de servicios,
+descubrimiento de rutas y rastreo HTML. El progreso va a stderr y el JSON a stdout.
+Cada módulo conserva sus hallazgos, estado y cobertura; no se mezclan las notas
+de módulos distintos para inventar una puntuación global.
+
+```bash
+atalaya audit https://mi-dominio.example --formato html --salida auditoria.html
+atalaya audit https://mi-dominio.example --modules "http-headers,tls,subdomains"
+atalaya audit http://127.0.0.1:8000 --modules "services,web-paths,web-crawl" --ports "8000" --no-save
+atalaya history list --json
+atalaya history show ID --formato html --salida auditoria.html
+atalaya history compare ID_ANTERIOR ID_ACTUAL --formato json
+```
+
+Por defecto se guardan las auditorías en `.atalaya/history/history.sqlite3`,
+excluido de Git. `--history-dir` cambia la ubicación y `--no-save` evita guardar
+y comparar esa ejecución. No se envía el historial a ningún servicio externo.
+Cada ejecución se compara automáticamente con la última del mismo objetivo y
+la misma configuración. Cambiar módulos, puertos o presupuestos crea una serie
+distinta. Los identificadores completos se consultan con `history list`.
+
+La evolución distingue hallazgos **nuevos, cambiados, resueltos, sin verificar y
+sin cambios**. Un hallazgo ausente solo se marca resuelto si su módulo terminó
+completamente. Si la ejecución fue parcial, queda sin verificar y se conserva
+como referencia para las siguientes comparaciones. Los cambios en evidencia
+volátil no generan hallazgos nuevos; las observaciones estructuradas, como una
+versión anunciada distinta, sí aparecen como cambios.
+
+Con una URL HTTP se omite TLS; no se presupone que su puerto hable HTTPS.
+Los módulos de red analizan el host declarado. Los subdominios descubiertos no
+se escanean automáticamente y DNS se añade explícitamente con `--modules`.
+Los códigos de salida siguen la prioridad error (1), hallazgos por encima del
+umbral (2), cobertura incompleta (3) y ejecución completa sin esos hallazgos (0).
+
+### Subdominios, servicios y superficie web
+
+```bash
+atalaya subdomains mi-dominio.example --wordlist nombres.txt --concurrency 4
+atalaya services mi-servidor.example --ports "22,25,80,443,8443"
+atalaya services 127.0.0.1 --ports "9000" --http-ports "9000"
+atalaya services mi-servidor.example --ports "9443" --tls-ports "9443"
+atalaya web-crawl https://mi-web.example/app/ --max-pages 25 --max-depth 2 --rate 2
+```
+
+`subdomains` consulta A y AAAA usando los resolutores del sistema y dnspython,
+con tiempos acotados. Lleva 20 prefijos habituales y admite un diccionario UTF-8
+de hasta 256 prefijos y 64 KiB. Dos nombres aleatorios sirven como control de
+wildcard. Si hay wildcard o el control no concluye, los positivos son candidatos
+y quedan sin determinar. Un registro resuelto no prueba propiedad del activo.
+
+`services` admite hasta 128 puertos. Lee como máximo 4 KiB de respuesta y reconoce
+SSH, HTTP(S), SMTP, FTP, POP3 e IMAP. En los puertos HTTP declarados envía una
+petición HEAD; en los demás espera un saludo. `--tls-ports` negocia TLS para
+identificar el servicio, **sin evaluar la confianza del certificado**: para eso
+está `tls`. Los protocolos se confirman por su respuesta, nunca por el número
+de puerto. La versión es la anunciada por el servidor, no una confirmación de
+vulnerabilidades. Un servicio silencioso o desconocido queda sin determinar.
+
+`web-crawl` usa GET sin credenciales y sin ejecutar JavaScript. Se limita al mismo
+esquema, host, puerto y prefijo de ruta. Sigue enlaces HTML hasta la profundidad
+pedida; admite hasta 100 peticiones y lee como máximo 128 KiB por respuesta.
+Las redirecciones se revisan antes de seguirlas. No envía formularios ni conserva
+sus valores o los valores de query; recoge nombres de campos y parámetros.
+Las referencias a scripts e iframes se incluyen en el inventario sin ejecutarlas. Ignora rutas
+con segmentos como logout, delete o reset. Ante HTTP 429/503 detiene el rastreo.
+Los límites agotados y errores pendientes impiden dar una nota final.
+
+### Informes y observatorio
+
+Los informes HTML son autocontenidos y funcionan sin conexión. Incluyen resumen,
+navegación por módulos, búsqueda en títulos/evidencias/soluciones, filtros de
+gravedad y módulo, tema claro/oscuro y vista de impresión/PDF. Los resultados de
+reconocimiento se muestran también en terminal, aunque sean informativos.
+
+El observatorio SSH conserva el token solo en memoria y ofrece búsqueda en los
+últimos intentos, filtro de gravedad, pausa de la vista y tema claro/oscuro.
+Pausar no detiene el servicio ni la persistencia; al reanudar se muestra el
+último snapshot. La exportación corresponde al snapshot que se está viendo.
 
 ### Reconocimiento activo: puertos TCP y rutas web
 
